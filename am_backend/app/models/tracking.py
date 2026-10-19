@@ -27,7 +27,7 @@ class GpsLocationLog(Base):
 
     oid = Column(Integer, primary_key=True, autoincrement=True, index=True)
     Employee = Column(Integer, nullable=False, index=True)
-    shift_id = Column(Integer, ForeignKey("PATROL_SHIFTS.oid"), nullable=True, index=True)
+    shift_id = Column(Integer, nullable=True, index=True)
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
     accuracy = Column(Float, nullable=True)
