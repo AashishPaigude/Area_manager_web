@@ -26,10 +26,20 @@ class AnalyticsService:
 
     @staticmethod
     def get_officers_dropdown(
-        db: Session, user_branch_oid: Optional[int] = None
+        db: Session,
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        user_branch_oids: Optional[List[int]] = None,
     ) -> List[OfficerAnalyticsDropdownItem]:
         """Fetch list of active field officers with quick visit summary for dropdown selector."""
-        officers = AnalyticsRepository.get_field_officers(db, user_branch_oid=user_branch_oid)
+        kwargs = {}
+        if area_manager_oid is not None:
+            kwargs["area_manager_oid"] = area_manager_oid
+        if user_branch_oids is not None:
+            kwargs["user_branch_oids"] = user_branch_oids
+        officers = AnalyticsRepository.get_field_officers(
+            db, user_branch_oid=user_branch_oid, **kwargs
+        )
         officer_oids = [o["employee_oid"] for o in officers]
 
         day_reports = AnalyticsRepository.get_day_reports(db, officer_oids=officer_oids)
@@ -72,21 +82,54 @@ class AnalyticsService:
         to_date: Optional[date] = None,
         period: str = "weekly",
         user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        user_branch_oids: Optional[List[int]] = None,
     ) -> AnalyticsSummaryResponse:
         """Compute full dynamic analytics payload for either Fleet overview or specific Officer drill-down."""
-        all_officers = AnalyticsRepository.get_field_officers(db, user_branch_oid=user_branch_oid)
+        kwargs = {}
+        if area_manager_oid is not None:
+            kwargs["area_manager_oid"] = area_manager_oid
+        if user_branch_oids is not None:
+            kwargs["user_branch_oids"] = user_branch_oids
+        all_officers = AnalyticsRepository.get_field_officers(
+            db, user_branch_oid=user_branch_oid, **kwargs
+        )
         all_officer_oids = [o["employee_oid"] for o in all_officers]
 
         selected_officer_summary: Optional[OfficerProfileSummary] = None
         target_officer_oids = all_officer_oids
 
         if employee_oid is not None:
-            emp_info = AnalyticsRepository.get_officer_by_oid(db, employee_oid, user_branch_oid=user_branch_oid)
-            if not emp_info:
+            from app.models.employee import Employee
+            emp = db.query(Employee).filter(Employee.oid == employee_oid).first()
+            if not emp:
                 raise AppBaseException(
-                    message=f"Officer with ID {employee_oid} not found or access denied.",
+                    message=f"Officer with ID {employee_oid} not found.",
                     code="OFFICER_NOT_FOUND",
                     status_code=404,
+                )
+            if user_branch_oids is not None:
+                is_allowed = (
+                    (area_manager_oid is not None and emp.AREA_MANAGER_OID == area_manager_oid)
+                    or (emp.BRANCH in user_branch_oids and (emp.AREA_MANAGER_OID is None or emp.AREA_MANAGER_OID == area_manager_oid))
+                )
+                if not is_allowed:
+                    raise AppBaseException(
+                        message=f"Access denied: Officer with ID {employee_oid} belongs to an unassigned branch.",
+                        code="FORBIDDEN_BRANCH",
+                        status_code=403,
+                    )
+            elif area_manager_oid is not None and emp.AREA_MANAGER_OID != area_manager_oid:
+                raise AppBaseException(
+                    message=f"Access denied: Officer with ID {employee_oid} is not assigned to this area manager.",
+                    code="FORBIDDEN_OFFICER",
+                    status_code=403,
+                )
+            elif area_manager_oid is None and user_branch_oid is not None and emp.BRANCH != user_branch_oid:
+                raise AppBaseException(
+                    message=f"Access denied: Officer with ID {employee_oid} belongs to another branch.",
+                    code="FORBIDDEN_BRANCH",
+                    status_code=403,
                 )
             target_officer_oids = [employee_oid]
 

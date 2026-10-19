@@ -27,6 +27,10 @@ def get_dashboard(
         "weekly",
         description="Calculation period for planned and completed visits (weekly or monthly). Defaults to weekly.",
     ),
+    branch_oid: Optional[int] = Query(
+        None,
+        description="Optional Branch OID filter.",
+    ),
     current_user: UserContext = Depends(get_current_user_context),
     db: Session = Depends(get_db),
 ) -> DashboardResponse:
@@ -35,12 +39,15 @@ def get_dashboard(
     Returns summary count metrics, active officer roster items with punch & GPS statuses,
     and actual submitted site visits mapped chronologically per officer scoped by user branch context.
     """
+    scoped_branches = current_user.resolve_scoped_branch_oids(branch_oid)
     return DashboardService.get_dashboard_summary(
         db=db,
         target_date=target_date,
         force_refresh=force_refresh,
         period=period or "weekly",
-        branch_oid=current_user.branch_oid,
+        branch_oid=branch_oid,
+        area_manager_oid=current_user.area_manager_oid,
+        branch_oids=scoped_branches,
     )
 
 

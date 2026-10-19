@@ -28,3 +28,4 @@ class FieldOfficerAssignedVisits(Base):
     # Relationships
     employee = relationship("Employee")
     frequencies = relationship("FieldOfficerVisitFrequency", back_populates="assigned_visit", cascade="all, delete-orphan")
+    custom_visits = relationship("FieldOfficerNewClientVisits", back_populates="assigned_visit", cascade="all, delete-orphan")

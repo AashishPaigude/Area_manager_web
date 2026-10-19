@@ -40,6 +40,8 @@ export interface ReportExecutiveSummary {
   day_reports: number;
   night_reports: number;
   total_sites_covered: number;
+  planned_completed?: number;
+  unplanned_completed?: number;
 }
 
 export interface SiteVisitSummary {
@@ -51,6 +53,8 @@ export interface SiteVisitSummary {
   check_out?: string | null;
   status?: string | null;
   visit_date?: string | null;
+  is_planned?: boolean;
+  plan_code?: string | null;
 }
 
 export interface GeneralReportResponse {
@@ -67,6 +71,8 @@ export interface GeneralReportResponse {
   reasonOfVisit?: string | null;
   remark?: string | null;
   photos: string[];
+  is_planned?: boolean;
+  plan_code?: string | null;
 }
 
 export interface DayReportResponse {
@@ -91,6 +97,8 @@ export interface DayReportResponse {
   lecture_details?: any;
   random_checking?: any;
   overall_remarks?: string | null;
+  is_planned?: boolean;
+  plan_code?: string | null;
 }
 
 export interface NightReportResponse {
@@ -115,6 +123,22 @@ export interface NightReportResponse {
   status?: string | null;
   overall_remarks?: string | null;
   officer_signature?: string | null;
+  is_planned?: boolean;
+  plan_code?: string | null;
+}
+
+export interface PlanInfoSummary {
+  plan_oid: number;
+  plan_code: string;
+  planning_type: string;
+  week_start_date?: string | null;
+  week_end_date?: string | null;
+  planning_month?: number | null;
+  planning_year?: number | null;
+  status?: string | null;
+  total_sites?: number;
+  total_planned_visits?: number;
+  visits_done?: number;
 }
 
 export interface CombinedReportResponse {
@@ -129,15 +153,20 @@ export interface CombinedReportResponse {
   company_short_name?: string | null;
   company_logo_url?: string | null;
   is_eagle?: boolean;
+  plan_info?: PlanInfoSummary | null;
 }
 
 /**
  * Fetch available active officers list for the Reports page selector.
  * GET /api/v1/reports/officers
  */
-export const getOfficers = async (): Promise<OfficerListItem[]> => {
+export const getOfficers = async (branchOid?: number | null): Promise<OfficerListItem[]> => {
   try {
-    const response = await api.get<OfficerListItem[]>('/api/v1/reports/officers');
+    const params: Record<string, any> = {};
+    if (branchOid !== undefined && branchOid !== null) {
+      params.branch_oid = branchOid;
+    }
+    const response = await api.get<OfficerListItem[]>('/api/v1/reports/officers', { params });
     return response.data;
   } catch (error: any) {
     const message =
@@ -153,9 +182,13 @@ export const getOfficers = async (): Promise<OfficerListItem[]> => {
  * Fetch available officers with reports for the Reports page roster.
  * GET /api/v1/reports/officers-with-reports
  */
-export const getOfficersWithReports = async (): Promise<OfficerListItem[]> => {
+export const getOfficersWithReports = async (branchOid?: number | null): Promise<OfficerListItem[]> => {
   try {
-    const response = await api.get<OfficerListItem[]>('/api/v1/reports/officers-with-reports');
+    const params: Record<string, any> = {};
+    if (branchOid !== undefined && branchOid !== null) {
+      params.branch_oid = branchOid;
+    }
+    const response = await api.get<OfficerListItem[]>('/api/v1/reports/officers-with-reports', { params });
     return response.data;
   } catch (error: any) {
     const message =
@@ -174,12 +207,14 @@ export const getOfficersWithReports = async (): Promise<OfficerListItem[]> => {
 export const getCombinedReport = async (
   employeeOid: number,
   fromDate?: string,
-  toDate?: string
+  toDate?: string,
+  planOid?: number
 ): Promise<CombinedReportResponse> => {
   try {
     const params: Record<string, string> = {};
     if (fromDate) params.from_date = fromDate;
     if (toDate) params.to_date = toDate;
+    if (planOid) params.plan_oid = String(planOid);
 
     const response = await api.get<CombinedReportResponse>(
       `/api/v1/reports/combined/${employeeOid}`,
@@ -192,75 +227,6 @@ export const getCombinedReport = async (
       error.response?.data?.detail ||
       error.message ||
       `Failed to fetch combined report for officer OID ${employeeOid}`;
-    throw new Error(message);
-  }
-};
-
-export interface BranchEmailAccessItem {
-  oid: number;
-  name: string;
-  short_name?: string | null;
-  address?: string | null;
-  email_access: boolean;
-  field_officer_count: number;
-}
-
-export interface ReportEmailAccessSummary {
-  enabled_count: number;
-  disabled_count: number;
-  total_count: number;
-}
-
-export interface ReportEmailAccessResponse {
-  summary: ReportEmailAccessSummary;
-  branches: BranchEmailAccessItem[];
-}
-
-export interface UpdateEmailAccessResponse {
-  success: boolean;
-  message: string;
-  branch_oid: number;
-  email_access: boolean;
-}
-
-/**
- * Fetch all branches with email access status and active field officer count (DESIGNATION = 19, active = 1).
- * GET /api/v1/report-email-access/branches
- */
-export const getReportEmailAccessBranches = async (): Promise<ReportEmailAccessResponse> => {
-  try {
-    const response = await api.get<ReportEmailAccessResponse>('/api/v1/report-email-access/branches');
-    return response.data;
-  } catch (error: any) {
-    const message =
-      error.response?.data?.message ||
-      error.response?.data?.detail ||
-      error.message ||
-      'Failed to fetch report email access branches from backend';
-    throw new Error(message);
-  }
-};
-
-/**
- * Enable or disable report email access for a branch (updates BRANCH.email_access).
- * PATCH /api/v1/report-email-access/branches/{branchOid}
- */
-export const updateBranchEmailAccess = async (
-  branchOid: number,
-  emailAccess: boolean
-): Promise<UpdateEmailAccessResponse> => {
-  try {
-    const response = await api.patch<UpdateEmailAccessResponse>(
-      `/api/v1/report-email-access/branches/${branchOid}`,
-      { email_access: emailAccess }
-    );
-    return response.data;
-  } catch (error: any) {
-    const message =
-      error.response?.data?.message ||
-      error.response?.data?.detail ||
-      error.message ||
-      `Failed to update email access for branch OID ${branchOid}`;
     throw new Error(message);
   }
 };

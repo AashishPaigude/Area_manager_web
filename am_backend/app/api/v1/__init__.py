@@ -5,9 +5,9 @@ from app.api.v1.visits import router as visits_router
 from app.api.v1.tracking import router as tracking_router
 from app.api.v1.attendance import router as attendance_router
 from app.api.v1.reports import router as reports_router
-from app.api.v1.report_email_access import router as report_email_access_router
 from app.api.v1.analytics import router as analytics_router
 from app.api.v1.admin import router as admin_router
+from app.api.v1.auth import router as auth_router
 
 api_router = APIRouter()
 
@@ -17,7 +17,7 @@ api_router.include_router(visits_router, prefix="/visits", tags=["Visits"])
 api_router.include_router(tracking_router, prefix="/tracking", tags=["Tracking"])
 api_router.include_router(attendance_router, prefix="/attendance", tags=["Attendance"])
 api_router.include_router(reports_router, prefix="/reports", tags=["Reports"])
-api_router.include_router(report_email_access_router, prefix="/report-email-access", tags=["Report Email Access"])
 api_router.include_router(analytics_router, prefix="/analytics", tags=["Analytics"])
 api_router.include_router(admin_router, prefix="/admin", tags=["Admin"])
+api_router.include_router(auth_router, prefix="/auth", tags=["Auth"])
 

@@ -24,6 +24,7 @@ class Employee(Base):
     EMPLOYEE_PERSON = Column(BigInteger, nullable=True)
     COMPANY = Column(BigInteger, nullable=True)
     track_history_enabled = Column(SmallInteger, default=1, nullable=False)
+    AREA_MANAGER_OID = Column(BigInteger, nullable=True)
 
     # Relationships within the Area Manager application scope
     site = relationship("Site", back_populates="employees")

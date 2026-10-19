@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
-import { Users, AlertTriangle, CheckCircle2, Filter, Loader2, RefreshCw, AlertCircle, Calendar as CalendarIcon } from "lucide-react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { Users, AlertTriangle, CheckCircle2, Filter, Loader2, RefreshCw, AlertCircle, Calendar as CalendarIcon, Search } from "lucide-react";
 import { format, parseISO, subDays, startOfWeek, endOfWeek, startOfMonth, endOfMonth } from "date-fns";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +11,7 @@ import {
   AttendanceListData,
   AttendanceRecord,
 } from "../services/attendanceService";
+import { getBranches, Branch } from "@/services/visitService";
 
 const statusStyle: Record<string, { badge: string; label: string }> = {
   present:      { badge: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20", label: "Present" },
@@ -26,15 +27,27 @@ export default function Attendance() {
   const [startDate, setStartDate] = useState<string>(getTodayStr());
   const [endDate, setEndDate] = useState<string>(getTodayStr());
   const [filterStatus, setFilterStatus] = useState<string>("ALL");
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selectedBranch, setSelectedBranch] = useState<string>("ALL");
+  const [searchQuery, setSearchQuery] = useState<string>("");
   const [attendanceData, setAttendanceData] = useState<AttendanceListData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchAttendance = useCallback(async (sDate: string, eDate: string, statusVal: string) => {
+  // Fetch branches on mount
+  useEffect(() => {
+    getBranches()
+      .then((bList) => setBranches(bList || []))
+      .catch((err) => console.error("Failed to load branches for Attendance:", err));
+  }, []);
+
+  const fetchAttendance = useCallback(async (sDate: string, eDate: string, statusVal: string, branchVal?: string) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await getAttendance(undefined, statusVal, sDate, eDate);
+      const activeBranch = branchVal !== undefined ? branchVal : selectedBranch;
+      const branchOid = activeBranch !== "ALL" ? parseInt(activeBranch) : undefined;
+      const res = await getAttendance(undefined, statusVal, sDate, eDate, branchOid);
       setAttendanceData(res.data);
     } catch (err: any) {
       console.error("Attendance fetch error:", err);
@@ -42,7 +55,7 @@ export default function Attendance() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedBranch]);
 
   const handlePresetChange = (preset: string) => {
     setDatePreset(preset);
@@ -104,6 +117,16 @@ export default function Attendance() {
   const summary = attendanceData?.summary || { present: 0, absent: 0, missed_punch: 0, total_officers: 0 };
   const records: AttendanceRecord[] = attendanceData?.records || [];
 
+  const filteredRecords = useMemo(() => {
+    if (!searchQuery.trim()) return records;
+    const q = searchQuery.trim().toLowerCase();
+    return records.filter(
+      (r) =>
+        r.employee_name.toLowerCase().includes(q) ||
+        (r.emp_code && r.emp_code.toLowerCase().includes(q))
+    );
+  }, [records, searchQuery]);
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -150,6 +173,40 @@ export default function Attendance() {
         <div className="flex flex-wrap items-center gap-2">
           <Filter className="h-3.5 w-3.5 text-muted-foreground" />
           
+          {/* Officer Search Box */}
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/60" />
+            <input
+              type="text"
+              placeholder="Search..."
+              title="Search by officer name or code"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-8 pr-2 h-7 w-36 sm:w-44 text-xs rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+          </div>
+
+          {/* Branch Dropdown */}
+          {branches.length > 1 && (
+            <Select 
+              value={selectedBranch} 
+              onValueChange={(val) => { 
+                setSelectedBranch(val); 
+                fetchAttendance(startDate, endDate, filterStatus, val); 
+              }}
+            >
+              <SelectTrigger className="h-7 w-36 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                <SelectValue placeholder="All Branches" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">All Branches</SelectItem>
+                {branches.map(b => (
+                  <SelectItem key={b.oid} value={String(b.oid)}>{b.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+
           {/* Status Dropdown */}
           <Select 
             value={filterStatus} 
@@ -240,7 +297,7 @@ export default function Attendance() {
 
         <div className="flex items-center gap-3">
           <span className="text-xs text-muted-foreground">
-            {loading ? "Loading..." : `${records.length} records`}
+            {loading ? "Loading..." : searchQuery.trim() ? `${filteredRecords.length} of ${records.length} records` : `${records.length} records`}
           </span>
           <button
             onClick={handleRetry}
@@ -298,14 +355,14 @@ export default function Attendance() {
                     <td className="px-4 py-3 text-center"><div className="h-5 bg-muted rounded w-16 mx-auto" /></td>
                   </tr>
                 ))
-              ) : records.length === 0 && !error ? (
+              ) : filteredRecords.length === 0 && !error ? (
                 <tr>
                   <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                    No attendance records found for the selected date.
+                    {searchQuery.trim() ? `No officers matching "${searchQuery}".` : "No attendance records found for the selected date."}
                   </td>
                 </tr>
               ) : (
-                records.map((a) => {
+                filteredRecords.map((a) => {
                   const keyStatus = (a.status || "").toLowerCase();
                   const st = statusStyle[keyStatus] || {
                     badge: "bg-muted text-muted-foreground",
@@ -379,12 +436,12 @@ export default function Attendance() {
             <div className="p-8 text-center text-sm text-muted-foreground flex items-center justify-center gap-2">
               <Loader2 className="h-4 w-4 animate-spin" /> Loading attendance records...
             </div>
-          ) : records.length === 0 && !error ? (
+          ) : filteredRecords.length === 0 && !error ? (
             <div className="p-8 text-center text-sm text-muted-foreground">
-              No attendance records found for the selected date.
+              {searchQuery.trim() ? `No officers matching "${searchQuery}".` : "No attendance records found for the selected date."}
             </div>
           ) : (
-            records.map((a) => {
+            filteredRecords.map((a) => {
               const keyStatus = (a.status || "").toLowerCase();
               const st = statusStyle[keyStatus] || {
                 badge: "bg-muted text-muted-foreground",

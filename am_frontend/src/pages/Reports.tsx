@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   CalendarDays, MapPin, Clock, CheckCircle2, AlertTriangle,
-  Activity, Filter, X, Building2, Navigation, FileText, Search, Users, ChevronRight, Loader2, Download
+  Activity, Filter, X, Building2, Navigation, FileText, Search, Users, ChevronRight,
+  ChevronLeft, ChevronsLeft, ChevronsRight, Loader2, Download,
+  BookmarkCheck, CalendarCheck, BarChart3, Layers
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +22,7 @@ import { GeneralVisitReportTemplate } from "@/components/reports/GeneralVisitRep
 import html2pdf from "html2pdf.js";
 import { toast } from "sonner";
 import {
+  getOfficers,
   getOfficersWithReports,
   getCombinedReport,
   OfficerListItem,
@@ -27,7 +30,12 @@ import {
   SiteVisitSummary,
 } from "@/services/reportService";
 import { getDashboardData, DashboardResponse } from "@/services/dashboardService";
-import { getSites, SiteItem } from "@/services/visitService";
+import { getSites, SiteItem, listPlans, PlanSummary, getBranches, Branch } from "@/services/visitService";
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"
+];
 
 const statusStyle: Record<string, { badge: string; dot: string }> = {
   completed: { badge: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400", dot: "bg-emerald-500" },
@@ -422,8 +430,18 @@ export function SingleSiteReportView({
 export default function Reports() {
   const navigate = useNavigate();
 
-  // State for real backend officers
+  // Sub-tabs: 'daily' (Filtered normal reports) vs 'planned' (Planned visits segregated)
+  const [activeReportTab, setActiveReportTab] = useState<"daily" | "planned">("daily");
+  const [plansList, setPlansList] = useState<PlanSummary[]>([]);
+  const [loadingPlans, setLoadingPlans] = useState<boolean>(false);
+  const [plansError, setPlansError] = useState<string | null>(null);
+  const [plansSearch, setPlansSearch] = useState<string>("");
+  const [plansTypeFilter, setPlansTypeFilter] = useState<string>("ALL");
+
+  // State for real backend officers with submitted reports
   const [officers, setOfficers] = useState<OfficerListItem[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selectedBranch, setSelectedBranch] = useState<string>("all");
   const [loadingOfficers, setLoadingOfficers] = useState(true);
   const [officersError, setOfficersError] = useState<string | null>(null);
 
@@ -436,6 +454,7 @@ export default function Reports() {
   const [filterDateType, setFilterDateType] = useState<string>("all");
   const [customFrom, setCustomFrom] = useState<string>("");
   const [customTo, setCustomTo] = useState<string>("");
+  const [searchOfficer, setSearchOfficer] = useState<string>("");
 
   // State for selected officer combined report
   const [activeReport, setActiveReport] = useState<CombinedReportResponse | null>(null);
@@ -558,21 +577,11 @@ export default function Reports() {
     return null;
   };
 
-  // 1. Fetch all officers, dashboard data, and role-authorized sites on mount
+  // 1. Fetch branches, dashboard data, and role-authorized sites on mount
   useEffect(() => {
-    setLoadingOfficers(true);
-    setOfficersError(null);
-
-    getOfficersWithReports()
-      .then((data) => {
-        setOfficers(data);
-        setLoadingOfficers(false);
-      })
-      .catch((err: any) => {
-        console.error("Failed to load officers with reports list:", err);
-        setOfficersError(err.message || "Failed to load officers list.");
-        setLoadingOfficers(false);
-      });
+    getBranches()
+      .then((data) => setBranches(data || []))
+      .catch((err) => console.error("Failed to load branches for Reports page:", err));
 
     getDashboardData()
       .then((data) => setDashboardData(data))
@@ -582,6 +591,62 @@ export default function Reports() {
       .then((sites) => setAuthorizedSites(sites))
       .catch((err) => console.error("Failed to load authorized sites for Reports page:", err));
   }, []);
+
+  // Fetch officers with submitted reports whenever selectedBranch changes
+  useEffect(() => {
+    setLoadingOfficers(true);
+    setOfficersError(null);
+
+    const bOid = selectedBranch !== "all" ? Number(selectedBranch) : null;
+
+    getOfficersWithReports(bOid)
+      .then((data) => {
+        setOfficers(data);
+        setLoadingOfficers(false);
+      })
+      .catch((err: any) => {
+        console.error("Failed to load officers with reports list:", err);
+        setOfficersError(err.message || "Failed to load officers list.");
+        setLoadingOfficers(false);
+      });
+  }, [selectedBranch]);
+
+  // Fetch visit plans when Planned Visits tab is opened
+  useEffect(() => {
+    if (activeReportTab === "planned" && plansList.length === 0) {
+      setLoadingPlans(true);
+      setPlansError(null);
+      listPlans()
+        .then((data) => {
+          setPlansList(data);
+          setLoadingPlans(false);
+        })
+        .catch((err: any) => {
+          console.error("Failed to load plans list:", err);
+          setPlansError(err.message || "Failed to load visit plans.");
+          setLoadingPlans(false);
+        });
+    }
+  }, [activeReportTab, plansList.length]);
+
+  const filteredPlans = useMemo(() => {
+    // Only published plans where visits have been completed and reports filed (visits_done > 0)
+    let list = plansList.filter(
+      (p) => p.status === "PUBLISHED" && (p.visits_done ?? 0) > 0
+    );
+    if (plansTypeFilter !== "ALL") {
+      list = list.filter((p) => p.planning_type === plansTypeFilter);
+    }
+    if (plansSearch.trim()) {
+      const q = plansSearch.toLowerCase().trim();
+      list = list.filter(
+        (p) =>
+          (p.plan_code && p.plan_code.toLowerCase().includes(q)) ||
+          (p.field_officer_name && p.field_officer_name.toLowerCase().includes(q))
+      );
+    }
+    return list;
+  }, [plansList, plansTypeFilter, plansSearch]);
 
   // 2. Fetch active report whenever filterOfficer or expandedOfficerId/expandedDate changes
   const targetEmployeeOid = useMemo(() => {
@@ -624,15 +689,15 @@ export default function Reports() {
       });
   }, [targetEmployeeOid, targetDate, filterDateType, customFrom, customTo]);
 
-  // Unique officers list for dropdown filter and summary count
+  // Unique officers list for dropdown filter and summary count (only officers with submitted reports)
   const uniqueOfficers = useMemo(() => {
     const map = new Map<number, OfficerListItem>();
     officers.forEach((o) => {
-      if (!map.has(o.employee_oid)) {
+      if ((o.total_reports ?? 0) > 0 && !map.has(o.employee_oid)) {
         map.set(o.employee_oid, o);
       }
     });
-    return Array.from(map.values());
+    return Array.from(map.values()).sort((a, b) => a.officer.localeCompare(b.officer));
   }, [officers]);
 
   // Derived Summary Counts supporting Weekly/Monthly toggle & Site filter
@@ -649,32 +714,69 @@ export default function Reports() {
 
     // Calculate sites covered count
     let sitesCovered = activeReport?.summary.total_sites_covered ?? 0;
-    if (!activeReport && dashboardData) {
-      const coveredSet = new Set<string>();
-      dashboardData.officers.forEach((o) => {
-        o.visits.forEach((v) => {
-          if ((v.status || "").toLowerCase() === "completed" && v.site_name) {
-            coveredSet.add(v.site_name);
+    if (!activeReport) {
+      const kpiSites = kpiPeriod === "weekly"
+        ? summary?.sitesCoveredWeekly
+        : summary?.sitesCoveredMonthly;
+
+      if (typeof kpiSites === "number" && kpiSites > 0) {
+        sitesCovered = kpiSites;
+      } else {
+        // Fallback: calculate from officer visit reports for the selected period
+        const coveredSet = new Set<string>();
+        const now = new Date();
+        const startPeriod = new Date(now);
+        if (kpiPeriod === "weekly") {
+          const day = now.getDay() || 7;
+          startPeriod.setDate(now.getDate() - day + 1);
+          startPeriod.setHours(0, 0, 0, 0);
+        } else {
+          startPeriod.setDate(1);
+          startPeriod.setHours(0, 0, 0, 0);
+        }
+
+        officers.forEach((o) => {
+          if (!o.last_visit_date) return;
+          const vDate = new Date(o.last_visit_date);
+          if (vDate >= startPeriod && vDate <= now) {
+            o.sites?.forEach((s) => {
+              if (s) coveredSet.add(s.trim());
+            });
           }
         });
-      });
-      sitesCovered = coveredSet.size;
+
+        if (dashboardData) {
+          dashboardData.officers.forEach((o) => {
+            o.visits.forEach((v) => {
+              if ((v.status || "").toLowerCase() === "completed" && v.site_name) {
+                coveredSet.add(v.site_name.trim());
+              }
+            });
+          });
+        }
+
+        sitesCovered = coveredSet.size;
+      }
     }
 
     // Dynamic adjustment when filterSite is active
     if (filterSite !== "all") {
+      const targetSite = filterSite.toLowerCase().trim();
       if (activeReport) {
         const hasSiteVisit = activeReport.site_visits.some(
-          (sv) => (sv.site_name || "").toLowerCase().trim() === filterSite.toLowerCase().trim()
+          (sv) => (sv.site_name || "").toLowerCase().trim() === targetSite
         );
         sitesCovered = hasSiteVisit ? 1 : 0;
-      } else if (dashboardData) {
-        const hasCompletedSite = dashboardData.officers.some((o) =>
+      } else {
+        const hasCoveredSite = officers.some((o) => {
+          const officerSites = o.sites || [];
+          return officerSites.some((s) => s.toLowerCase().trim() === targetSite);
+        }) || (dashboardData?.officers.some((o) =>
           o.visits.some(
-            (v) => (v.site_name || "").toLowerCase().trim() === filterSite.toLowerCase().trim() && (v.status || "").toLowerCase() === "completed"
+            (v) => (v.site_name || "").toLowerCase().trim() === targetSite && (v.status || "").toLowerCase() === "completed"
           )
-        );
-        sitesCovered = hasCompletedSite ? 1 : 0;
+        ) ?? false);
+        sitesCovered = hasCoveredSite ? 1 : 0;
       }
     }
 
@@ -684,7 +786,7 @@ export default function Reports() {
       totalSitesCovered: sitesCovered,
       fieldOfficersCount: uniqueOfficers.length,
     };
-  }, [kpiPeriod, dashboardData, activeReport, filterSite, uniqueOfficers]);
+  }, [kpiPeriod, dashboardData, activeReport, filterSite, uniqueOfficers, officers]);
 
   // Available unique sites across authorized sites, all officers & active reports
   const uniqueSites = useMemo(() => {
@@ -786,15 +888,25 @@ export default function Reports() {
     return true;
   };
 
-  // Filtered Roster Items
+  // Filtered Roster Items (Only officers with submitted reports)
   const rosterItems = useMemo(() => {
-    if (officers.length === 0) return [];
+    let filtered = officers.filter((o) => (o.total_reports ?? 0) > 0);
 
-    let filtered = officers;
+    if (filtered.length === 0) return [];
 
     // 1. Officer Filter
     if (filterOfficer !== "all") {
       filtered = filtered.filter((o) => String(o.employee_oid) === filterOfficer);
+    }
+
+    // 1b. Officer Name/Code Search
+    if (searchOfficer.trim()) {
+      const q = searchOfficer.trim().toLowerCase();
+      filtered = filtered.filter(
+        (o) =>
+          o.officer.toLowerCase().includes(q) ||
+          (o.emp_code && o.emp_code.toLowerCase().includes(q))
+      );
     }
 
     // 2. Date Filter
@@ -808,17 +920,23 @@ export default function Reports() {
 
     // 3. Site Filter (role-authorized site scope)
     if (filterSite !== "all") {
+      const targetSite = filterSite.toLowerCase().trim();
       filtered = filtered.filter((o) => {
         const officerSites = o.sites || [];
         if (officerSites.length > 0) {
-          return officerSites.some(
-            (sName) => sName.toLowerCase().trim() === filterSite.toLowerCase().trim()
-          );
+          if (officerSites.some(
+            (sName) => sName.toLowerCase().trim() === targetSite
+          )) return true;
+        }
+        if (o.visits && o.visits.length > 0) {
+          if (o.visits.some(
+            (v: any) => (v.site_name || v.site || "").toLowerCase().trim() === targetSite
+          )) return true;
         }
         const isSelected = activeReport?.officer.employee_oid === o.employee_oid;
         if (isSelected && activeReport) {
           return activeReport.site_visits.some(
-            (sv) => (sv.site_name || "").toLowerCase().trim() === filterSite.toLowerCase().trim()
+            (sv) => (sv.site_name || "").toLowerCase().trim() === targetSite
           );
         }
         return false;
@@ -841,7 +959,6 @@ export default function Reports() {
       const punchIn = isSelected ? activeReport?.officer.punch_in || o.punch_in || "—" : o.punch_in || "—";
       const punchOut = isSelected ? activeReport?.officer.punch_out || o.punch_out || "—" : o.punch_out || "—";
       const hours = isSelected && activeReport?.officer.hours_worked ? `${activeReport.officer.hours_worked} hrs` : (o.hours_worked || "—");
-      const gpsStatus = o.gps_status || "—";
 
       const rawDate = isSelected && activeReport?.site_visits[0]?.visit_date
         ? activeReport.site_visits[0].visit_date
@@ -859,13 +976,63 @@ export default function Reports() {
         sitesCount: `${o.total_sites || o.visits?.length || 0} Sites`,
         done,
         hours,
-        gpsStatus,
         rawDate: o.last_visit_date,
         date: formattedDate,
         visits: o.visits || [],
       };
     });
-  }, [officers, filterOfficer, filterSite, filterDateType, customFrom, customTo, activeReport]);
+  }, [officers, filterOfficer, searchOfficer, filterSite, filterDateType, customFrom, customTo, activeReport]);
+
+  // Pagination State for Roster Table
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(10);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filterOfficer, searchOfficer, filterSite, filterDateType, customFrom, customTo]);
+
+  const isFiltered = Boolean(
+    searchOfficer.trim() !== "" ||
+    (branches.length > 1 && selectedBranch !== "all") ||
+    filterOfficer !== "all" ||
+    filterSite !== "all" ||
+    filterDateType !== "all" ||
+    customFrom !== "" ||
+    customTo !== ""
+  );
+
+  const handleClearFilters = () => {
+    setSearchOfficer("");
+    setSelectedBranch("all");
+    setFilterOfficer("all");
+    setFilterSite("all");
+    setFilterDateType("all");
+    setCustomFrom("");
+    setCustomTo("");
+  };
+
+  // Computed Pagination Values for Roster
+  const totalRosterItems = rosterItems.length;
+  const totalRosterPages = Math.max(1, Math.ceil(totalRosterItems / pageSize));
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalRosterPages);
+
+  const paginatedRosterItems = useMemo(() => {
+    const start = (safeCurrentPage - 1) * pageSize;
+    return rosterItems.slice(start, start + pageSize);
+  }, [rosterItems, safeCurrentPage, pageSize]);
+
+  const getPaginationNumbers = (current: number, total: number): (number | string)[] => {
+    if (total <= 7) {
+      return Array.from({ length: total }, (_, i) => i + 1);
+    }
+    if (current <= 4) {
+      return [1, 2, 3, 4, 5, "...", total];
+    }
+    if (current >= total - 3) {
+      return [1, "...", total - 4, total - 3, total - 2, total - 1, total];
+    }
+    return [1, "...", current - 1, current, current + 1, "...", total];
+  };
 
   // Filtered Site Visits list for Stage 2
   const activeVisitsList = useMemo(() => {
@@ -906,13 +1073,45 @@ export default function Reports() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Reports</h1>
-        <p className="text-sm text-muted-foreground">All scheduled site visits and consolidated officer reports</p>
+      {/* Top Header & Sub-Tabs Navigation */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Reports</h1>
+          <p className="text-sm text-muted-foreground">All scheduled site visits and consolidated officer reports</p>
+        </div>
+
+        {/* Sub-tabs switcher */}
+        <div className="inline-flex items-center rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-200/80 dark:bg-slate-900 p-1 text-xs font-semibold shadow-inner gap-1.5">
+          <button
+            onClick={() => setActiveReportTab("daily")}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg transition-all ${
+              activeReportTab === "daily"
+                ? "bg-blue-600 text-white font-bold shadow-sm"
+                : "bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-semibold shadow-xs border border-slate-300/80 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700"
+            }`}
+          >
+            <CalendarDays className={`h-3.5 w-3.5 ${activeReportTab === "daily" ? "text-white" : "text-slate-500"}`} />
+            Daily & Filtered Reports
+          </button>
+          <button
+            onClick={() => setActiveReportTab("planned")}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg transition-all ${
+              activeReportTab === "planned"
+                ? "bg-blue-600 text-white font-bold shadow-sm"
+                : "bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-semibold shadow-xs border border-slate-300/80 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700"
+            }`}
+          >
+            <BookmarkCheck className={`h-3.5 w-3.5 ${activeReportTab === "planned" ? "text-white" : "text-slate-500"}`} />
+            Planned Visits Reports
+          </button>
+        </div>
       </div>
 
-      {/* Summary KPI Cards Section with Weekly/Monthly Toggle */}
-      <div className="space-y-2.5">
+      {/* Tab 1: Daily / Filtered Reports */}
+      {activeReportTab === "daily" && (
+        <div className="space-y-6 animate-in fade-in duration-150">
+          {/* Summary KPI Cards Section with Weekly/Monthly Toggle */}
+          <div className="space-y-2.5">
         <div className="flex items-center justify-start gap-3 px-0.5">
           <span className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">Visits Target:</span>
           <div className="inline-flex items-center rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 p-1 text-xs font-medium shadow-sm">
@@ -1001,84 +1200,119 @@ export default function Reports() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap gap-2 items-center">
-        <Filter className="h-3.5 w-3.5 text-muted-foreground" />
-        <Select value={filterOfficer} onValueChange={setFilterOfficer}>
-          <SelectTrigger className="h-7 w-44 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-            <SelectValue placeholder="Officer" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Officers</SelectItem>
-            {uniqueOfficers.map((o) => (
-              <SelectItem key={o.employee_oid} value={String(o.employee_oid)}>
-                {o.officer} ({o.emp_code || `EMP${o.employee_oid}`})
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Select value={filterSite} onValueChange={setFilterSite}>
-          <SelectTrigger className="h-7 w-40 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-            <SelectValue placeholder="Site" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Sites</SelectItem>
-            {uniqueSites.map((s) => (
-              <SelectItem key={s} value={s}>{s}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Select value={filterDateType} onValueChange={setFilterDateType}>
-          <SelectTrigger className="h-7 w-32 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-            <SelectValue placeholder="Date" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Dates</SelectItem>
-            <SelectItem value="today">Today</SelectItem>
-            <SelectItem value="yesterday">Yesterday</SelectItem>
-            <SelectItem value="weekly">Weekly</SelectItem>
-            <SelectItem value="custom">Custom Range</SelectItem>
-          </SelectContent>
-        </Select>
-
-        {filterDateType === "custom" && (
-          <div className="flex items-center gap-1.5 animate-in fade-in zoom-in duration-200">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+          <Filter className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          
+          {/* Officer Search Input */}
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/60" />
             <input
-              type="date"
-              value={customFrom}
-              onChange={(e) => setCustomFrom(e.target.value)}
-              className="h-7 px-2 rounded-md border border-slate-300 dark:border-slate-700 text-xs text-foreground bg-white dark:bg-slate-900 focus:outline-none focus:ring-1 focus:ring-primary shadow-sm"
-              title="From Date"
-            />
-            <span className="text-xs text-muted-foreground">to</span>
-            <input
-              type="date"
-              value={customTo}
-              onChange={(e) => setCustomTo(e.target.value)}
-              className="h-7 px-2 rounded-md border border-slate-300 dark:border-slate-700 text-xs text-foreground bg-white dark:bg-slate-900 focus:outline-none focus:ring-1 focus:ring-primary shadow-sm"
-              title="To Date"
+              type="text"
+              placeholder="Search..."
+              title="Search officer name or code"
+              value={searchOfficer}
+              onChange={(e) => setSearchOfficer(e.target.value)}
+              className="pl-8 pr-2 h-7 w-32 sm:w-40 text-xs rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm focus:outline-none focus:ring-1 focus:ring-primary"
             />
           </div>
-        )}
 
-        {(filterOfficer !== "all" || filterSite !== "all" || filterDateType !== "today" || customFrom !== "" || customTo !== "") && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-9 gap-1.5 text-xs"
-            onClick={() => {
-              setFilterOfficer("all");
-              setFilterSite("all");
-              setFilterDateType("today");
-              setCustomFrom("");
-              setCustomTo("");
-            }}
-          >
-            <X className="h-3 w-3" /> Clear
-          </Button>
-        )}
-        <span className="ml-auto text-xs text-muted-foreground">
+          {/* Branch Filter (Only shown when user/manager handles multiple branches) */}
+          {branches.length > 1 && (
+            <Select 
+              value={selectedBranch} 
+              onValueChange={(val) => {
+                setSelectedBranch(val);
+                setFilterOfficer("all");
+              }}
+            >
+              <SelectTrigger className="h-7 w-32 sm:w-36 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                <SelectValue placeholder="All Branches" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Branches</SelectItem>
+                {branches.map((b) => (
+                  <SelectItem key={b.oid} value={String(b.oid)}>
+                    {b.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+
+          <Select value={filterOfficer} onValueChange={setFilterOfficer}>
+            <SelectTrigger className="h-7 w-36 sm:w-40 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+              <SelectValue placeholder="Officer" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Officers</SelectItem>
+              {uniqueOfficers.map((o) => (
+                <SelectItem key={o.employee_oid} value={String(o.employee_oid)}>
+                  {o.officer} ({o.emp_code || `EMP${o.employee_oid}`})
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={filterSite} onValueChange={setFilterSite}>
+            <SelectTrigger className="h-7 w-32 sm:w-36 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+              <SelectValue placeholder="Site" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Sites</SelectItem>
+              {uniqueSites.map((s) => (
+                <SelectItem key={s} value={s}>{s}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={filterDateType} onValueChange={setFilterDateType}>
+            <SelectTrigger className="h-7 w-28 sm:w-32 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+              <SelectValue placeholder="Date" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Dates</SelectItem>
+              <SelectItem value="today">Today</SelectItem>
+              <SelectItem value="yesterday">Yesterday</SelectItem>
+              <SelectItem value="weekly">Weekly</SelectItem>
+              <SelectItem value="custom">Custom Range</SelectItem>
+            </SelectContent>
+          </Select>
+
+          {filterDateType === "custom" && (
+            <div className="flex items-center gap-1.5 animate-in fade-in zoom-in duration-200">
+              <input
+                type="date"
+                value={customFrom}
+                onChange={(e) => setCustomFrom(e.target.value)}
+                className="h-7 px-2 rounded-md border border-slate-300 dark:border-slate-700 text-xs text-foreground bg-white dark:bg-slate-900 focus:outline-none focus:ring-1 focus:ring-primary shadow-sm"
+                title="From Date"
+              />
+              <span className="text-xs text-muted-foreground">to</span>
+              <input
+                type="date"
+                value={customTo}
+                onChange={(e) => setCustomTo(e.target.value)}
+                className="h-7 px-2 rounded-md border border-slate-300 dark:border-slate-700 text-xs text-foreground bg-white dark:bg-slate-900 focus:outline-none focus:ring-1 focus:ring-primary shadow-sm"
+                title="To Date"
+              />
+            </div>
+          )}
+
+          {isFiltered && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 gap-1 text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10 border border-border/60 shrink-0 transition-colors"
+              title="Clear all filters"
+              onClick={handleClearFilters}
+            >
+              <X className="h-3 w-3" /> Clear
+            </Button>
+          )}
+        </div>
+
+        <span className="text-xs text-muted-foreground shrink-0 ml-auto sm:ml-0">
           {rosterItems.length} of {uniqueOfficers.length} officers
         </span>
       </div>
@@ -1107,59 +1341,45 @@ export default function Reports() {
               <table className="w-full text-sm table-fixed">
                 <thead className="bg-muted/15 border-b border-border/80">
                   <tr className="border-b text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
-                    <th className="px-4 py-3.5 text-left w-[26%]">Officer</th>
-                    <th className="px-2 py-3.5 text-center w-[15%] whitespace-nowrap">Date</th>
-                    <th className="px-2 py-3.5 text-center w-[13%] whitespace-nowrap">Visit Done</th>
-                    <th className="px-2 py-3.5 text-center w-[15%] whitespace-nowrap">Hrs Worked</th>
-                    <th className="px-2 py-3.5 text-center w-[13%] whitespace-nowrap">GPS Status</th>
-                    <th className="px-2 py-3.5 text-center w-[18%] whitespace-nowrap">Action</th>
+                    <th className="px-3 py-2 text-left w-[32%]">Officer</th>
+                    <th className="px-2 py-2 text-center w-[16%] whitespace-nowrap">Date</th>
+                    <th className="px-2 py-2 text-center w-[14%] whitespace-nowrap">Visit Done</th>
+                    <th className="px-2 py-2 text-center w-[16%] whitespace-nowrap">Hrs Worked</th>
+                    <th className="px-2 py-2 text-center w-[22%] whitespace-nowrap">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/60">
-                  {rosterItems.map((r) => {
-                    const gpsStatus = r.gpsStatus || "—";
+                  {paginatedRosterItems.map((r) => {
                     return (
                       <tr key={r.key} className="border-b last:border-0 hover:bg-muted/10 transition-colors">
                         {/* Officer name */}
-                        <td className="px-4 py-3.5 text-left">
-                          <div className="font-semibold text-sm text-foreground leading-tight truncate">{r.officer}</div>
-                          <div className="text-[11px] text-muted-foreground mt-0.5 font-mono">{r.empCode}</div>
+                        <td className="px-3 py-2 text-left">
+                          <div className="font-semibold text-xs text-foreground leading-tight truncate">{r.officer}</div>
+                          <div className="text-[10px] text-muted-foreground mt-0.5 font-mono">{r.empCode}</div>
                         </td>
 
                         {/* Date */}
-                        <td className="px-2 py-3.5 text-center font-mono-data text-xs text-muted-foreground whitespace-nowrap">
+                        <td className="px-2 py-2 text-center font-mono-data text-xs text-muted-foreground whitespace-nowrap">
                           {r.date}
                         </td>
 
                         {/* Visit Done count */}
-                        <td className="px-2 py-3.5 text-center">
+                        <td className="px-2 py-2 text-center">
                           <span className="text-xs font-mono-data font-semibold text-muted-foreground">
                             {r.done}
                           </span>
                         </td>
 
                         {/* Hours */}
-                        <td className="px-2 py-3.5 text-center font-mono-data text-xs font-medium whitespace-nowrap">{r.hours}</td>
+                        <td className="px-2 py-2 text-center font-mono-data text-xs font-medium whitespace-nowrap">{r.hours}</td>
 
-                        {/* Tracking badge */}
-                        <td className="px-2 py-3.5 text-center">
-                          <Badge className={`text-[10px] font-semibold border-0 capitalize
-                            ${gpsStatus === "online"  ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" :
-                              gpsStatus === "delayed" ? "bg-amber-500/15 text-amber-600 dark:text-amber-400" :
-                              gpsStatus === "offline" ? "bg-red-500/15 text-red-600 dark:text-red-400" :
-                                                        "bg-slate-400/15 text-slate-500"}`}
-                          >
-                            {gpsStatus === "delayed" ? "Connectivity Issue" : gpsStatus}
-                          </Badge>
-                        </td>
-
-                        {/* Action buttons */}
-                        <td className="px-2 py-3.5 text-center">
-                          <div className="flex flex-col items-center justify-center gap-1.5">
+                        {/* Action buttons - Side by Side */}
+                        <td className="px-2 py-2 text-center">
+                          <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
                             <Button
                               variant="outline"
                               size="sm"
-                              className="h-7 text-[10px] font-bold w-24"
+                              className="h-7 text-[10px] font-bold px-2.5 shadow-none hover:bg-muted/60"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setExpandedOfficerId(r.employee_oid);
@@ -1171,7 +1391,7 @@ export default function Reports() {
                             </Button>
                             <Button
                               size="sm"
-                              className="h-7 text-[10px] font-bold w-24 bg-blue-600 hover:bg-blue-700 text-white"
+                              className="h-7 text-[10px] font-bold px-2.5 bg-blue-600 hover:bg-blue-700 text-white shadow-none"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 navigate(`/reports/combined/${r.employee_oid}?from_date=${r.rawDate}&to_date=${r.rawDate}`);
@@ -1186,14 +1406,131 @@ export default function Reports() {
                   })}
                   {rosterItems.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="text-center py-8 text-muted-foreground text-xs bg-muted/5">
-                        No active officers found matching filters.
+                      <td colSpan={5} className="text-center py-8 text-muted-foreground text-xs bg-muted/5 font-medium">
+                        No submitted reports found matching filters.
                       </td>
                     </tr>
                   )}
                 </tbody>
               </table>
             </div>
+
+            {/* Pagination Controls Footer */}
+            {!loadingOfficers && rosterItems.length > 0 && (
+              <div className="border-t border-border/60 bg-card/60 px-4 py-3 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                {/* Left: Summary info & Page size selector */}
+                <div className="flex flex-wrap items-center gap-3 text-muted-foreground w-full sm:w-auto justify-between sm:justify-start">
+                  <span>
+                    Showing <span className="font-bold text-foreground font-mono-data">{(safeCurrentPage - 1) * pageSize + 1}</span> to{" "}
+                    <span className="font-bold text-foreground font-mono-data">{Math.min(safeCurrentPage * pageSize, totalRosterItems)}</span> of{" "}
+                    <span className="font-bold text-primary font-mono-data">{totalRosterItems}</span> records
+                  </span>
+
+                  <div className="flex items-center gap-1.5 ml-0 sm:ml-2">
+                    <span className="text-[11px] text-muted-foreground">Per page:</span>
+                    <Select
+                      value={String(pageSize)}
+                      onValueChange={(val) => {
+                        setPageSize(Number(val));
+                        setCurrentPage(1);
+                      }}
+                    >
+                      <SelectTrigger className="h-7 w-[68px] text-xs bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 shadow-sm px-2">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="10">10</SelectItem>
+                        <SelectItem value="20">20</SelectItem>
+                        <SelectItem value="50">50</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                {/* Right: Page Indicator and Buttons */}
+                <div className="flex items-center gap-1.5 w-full sm:w-auto justify-between sm:justify-end">
+                  {/* Current page indicator pill */}
+                  <span className="text-xs font-medium text-muted-foreground px-2.5 py-1 bg-muted/60 rounded-md border border-border/40 whitespace-nowrap">
+                    Page <strong className="text-primary font-mono-data">{safeCurrentPage}</strong> of{" "}
+                    <strong className="text-foreground font-mono-data">{totalRosterPages}</strong>
+                  </span>
+
+                  {/* Navigation Buttons */}
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-7 w-7 text-xs border-slate-300 dark:border-slate-700"
+                      disabled={safeCurrentPage === 1}
+                      onClick={() => setCurrentPage(1)}
+                      title="First Page"
+                    >
+                      <ChevronsLeft className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-7 w-7 text-xs border-slate-300 dark:border-slate-700"
+                      disabled={safeCurrentPage === 1}
+                      onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                      title="Previous Page"
+                    >
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                    </Button>
+
+                    {/* Page Numbers */}
+                    <div className="hidden md:flex items-center gap-1">
+                      {getPaginationNumbers(safeCurrentPage, totalRosterPages).map((pNum, idx) => {
+                        if (pNum === "...") {
+                          return (
+                            <span key={`ellipsis-${idx}`} className="px-1 text-muted-foreground text-xs">
+                              ...
+                            </span>
+                          );
+                        }
+                        const isCurrent = pNum === safeCurrentPage;
+                        return (
+                          <Button
+                            key={`page-${pNum}`}
+                            variant={isCurrent ? "default" : "outline"}
+                            size="icon"
+                            className={`h-7 w-7 text-xs font-mono-data ${
+                              isCurrent
+                                ? "bg-primary text-primary-foreground font-bold shadow-xs"
+                                : "border-slate-300 dark:border-slate-700 hover:bg-muted/80"
+                            }`}
+                            onClick={() => setCurrentPage(Number(pNum))}
+                          >
+                            {pNum}
+                          </Button>
+                        );
+                      })}
+                    </div>
+
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-7 w-7 text-xs border-slate-300 dark:border-slate-700"
+                      disabled={safeCurrentPage === totalRosterPages}
+                      onClick={() => setCurrentPage((p) => Math.min(totalRosterPages, p + 1))}
+                      title="Next Page"
+                    >
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-7 w-7 text-xs border-slate-300 dark:border-slate-700"
+                      disabled={safeCurrentPage === totalRosterPages}
+                      onClick={() => setCurrentPage(totalRosterPages)}
+                      title="Last Page"
+                    >
+                      <ChevronsRight className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1287,5 +1624,143 @@ export default function Reports() {
         />
       </div>
     </div>
+  )}
+
+  {/* Tab 2: Planned Visits Reports View */}
+  {activeReportTab === "planned" && (
+    <div className="space-y-4 animate-in fade-in duration-200">
+      {/* Quick Filter & Search on the left */}
+      <div className="flex items-center gap-2">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/60" />
+          <input
+            type="text"
+            placeholder="Search plan or officer..."
+            value={plansSearch}
+            onChange={(e) => setPlansSearch(e.target.value)}
+            className="pl-8 pr-2 h-7 w-48 text-xs rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+        </div>
+
+        <Select value={plansTypeFilter} onValueChange={setPlansTypeFilter}>
+          <SelectTrigger className="h-7 w-32 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm">
+            <SelectValue placeholder="All Types" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ALL">All Types</SelectItem>
+            <SelectItem value="WEEKLY">Weekly Plans</SelectItem>
+            <SelectItem value="MONTHLY">Monthly Plans</SelectItem>
+            <SelectItem value="SINGLE">Single Day</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {loadingPlans && (
+        <div className="flex items-center justify-center p-12 bg-card border rounded-xl space-x-3">
+          <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+          <span className="text-xs text-muted-foreground">Loading planned visit schedules...</span>
+        </div>
+      )}
+
+      {plansError && (
+        <div className="p-6 bg-red-50 border border-red-200 rounded-xl text-red-600 text-xs font-semibold flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span>{plansError}</span>
+        </div>
+      )}
+
+      {!loadingPlans && filteredPlans.length === 0 && (
+        <div className="p-12 text-center bg-card border rounded-xl space-y-2">
+          <BookmarkCheck className="h-8 w-8 text-muted-foreground/40 mx-auto" />
+          <p className="text-sm font-semibold text-foreground">No completed planned visits found</p>
+          <p className="text-xs text-muted-foreground">Only published plans with filed visit reports are displayed here.</p>
+        </div>
+      )}
+
+      {!loadingPlans && filteredPlans.length > 0 && (
+        <div className="rounded-xl border border-border bg-card overflow-hidden shadow-sm">
+          <table className="w-full text-sm table-fixed">
+            <thead className="bg-muted/15 border-b border-border/80">
+              <tr className="border-b text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                <th className="px-3 py-2 text-left w-[22%]">Plan Code & Type</th>
+                <th className="px-3 py-2 text-left w-[24%]">Field Officer</th>
+                <th className="px-3 py-2 text-left w-[24%]">Planned Period</th>
+                <th className="px-2 py-2 text-center w-[14%] whitespace-nowrap">Progress / Done</th>
+                <th className="px-3 py-2 text-center w-[16%] whitespace-nowrap">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border/60">
+              {filteredPlans.map((p) => {
+                const periodStr =
+                  p.planning_type === "WEEKLY"
+                    ? `${p.week_start_date || "—"} to ${p.week_end_date || "—"}`
+                    : p.planning_type === "MONTHLY"
+                    ? `${MONTH_NAMES[(p.planning_month || 1) - 1]} ${p.planning_year}`
+                    : p.visit_date || "Single Date";
+
+                return (
+                  <tr key={p.oid} className="border-b last:border-0 hover:bg-muted/10 transition-colors">
+                    <td className="px-3 py-2 text-left">
+                      <div className="font-bold text-sm text-foreground flex items-center gap-2">
+                        <span className="font-mono text-primary font-extrabold">{p.plan_code}</span>
+                        <Badge
+                          className={`text-[9px] font-bold border-0 px-2 py-0.5 capitalize ${
+                            p.planning_type === "WEEKLY"
+                              ? "bg-blue-500/15 text-blue-600 dark:text-blue-400"
+                              : p.planning_type === "MONTHLY"
+                              ? "bg-purple-500/15 text-purple-600 dark:text-purple-400"
+                              : "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                          }`}
+                        >
+                          {p.planning_type}
+                        </Badge>
+                      </div>
+                      <div className="text-[11px] text-muted-foreground mt-0.5 font-medium">
+                        {p.total_sites} Sites Assigned
+                      </div>
+                    </td>
+
+                    <td className="px-3 py-2 text-left">
+                      <div className="font-semibold text-xs text-foreground truncate">
+                        {p.field_officer_name || `Officer #${p.employee_oid}`}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground font-mono mt-0.5">
+                        EMP{p.employee_oid}
+                      </div>
+                    </td>
+
+                    <td className="px-3 py-2 text-left font-mono-data text-xs">
+                      <div className="flex items-center gap-1.5 font-semibold text-foreground text-xs">
+                        <CalendarDays className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                        <span className="truncate">{periodStr}</span>
+                      </div>
+                    </td>
+
+                    <td className="px-2 py-2 text-center font-mono-data font-bold text-xs text-foreground whitespace-nowrap">
+                      {p.visits_done} / {p.total_visits}
+                    </td>
+
+                    <td className="px-3 py-2 text-center">
+                      <Button
+                        size="sm"
+                        className="h-7 text-xs font-bold gap-1 bg-blue-600 hover:bg-blue-700 text-white shadow-none px-2.5 whitespace-nowrap"
+                        onClick={() => {
+                          navigate(`/reports/combined/${p.employee_oid}?plan_oid=${p.oid}`);
+                        }}
+                      >
+                        Combined Report
+                        <ChevronRight className="h-3 w-3" />
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )}
+</div>
   );
 }

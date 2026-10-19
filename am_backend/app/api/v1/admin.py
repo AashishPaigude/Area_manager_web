@@ -2,6 +2,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy import or_, and_
 
 from app.dependencies.database import get_db
 from app.dependencies.auth import get_current_user_context
@@ -11,6 +12,7 @@ from datetime import datetime
 from app.models.employee import Employee
 from app.models.branch import Branch
 from app.models.field_officer_track_history_config import FieldOfficerTrackHistoryConfig
+from app.repositories.visit_repository import VisitRepository
 
 router = APIRouter()
 
@@ -49,6 +51,31 @@ def _is_admin(current_user: UserContext) -> bool:
     return role_str.lower() == RoleType.ADMIN.value.lower()
 
 
+def _can_access_officer(
+    current_user: UserContext,
+    emp: Employee,
+    allowed_branches: Optional[List[int]],
+) -> bool:
+    if _is_admin(current_user):
+        return True
+
+    # 1. Direct assignment to this Area Manager
+    if current_user.area_manager_oid is not None and emp.AREA_MANAGER_OID == current_user.area_manager_oid:
+        return True
+
+    # 2. Officer is in Area Manager's allowed branches (and not assigned to another area manager)
+    if allowed_branches and emp.BRANCH in allowed_branches:
+        if emp.AREA_MANAGER_OID is None or emp.AREA_MANAGER_OID == current_user.area_manager_oid:
+            return True
+
+    # 3. Direct branch match
+    if current_user.branch_oid is not None and emp.BRANCH == current_user.branch_oid:
+        if emp.AREA_MANAGER_OID is None or emp.AREA_MANAGER_OID == current_user.area_manager_oid:
+            return True
+
+    return False
+
+
 @router.get("/employees/track-history", response_model=List[OfficerTrackHistoryResponse])
 def get_all_employees_track_history(
     current_user: UserContext = Depends(get_current_user_context),
@@ -56,7 +83,7 @@ def get_all_employees_track_history(
 ) -> List[OfficerTrackHistoryResponse]:
     """
     Retrieve all authorized Field Officers with their Track History setting.
-    Scoped to current_user.branch_oid unless user is Admin.
+    Scoped to current_user.branch_oid / area_manager_oid unless user is Admin.
     """
     query = (
         db.query(Employee, Branch.name.label("branch_name"))
@@ -64,8 +91,38 @@ def get_all_employees_track_history(
         .filter(Employee.active == 1, Employee.DESIGNATION == 19)
     )
 
-    if not _is_admin(current_user) and current_user.branch_oid is not None:
-        query = query.filter(Employee.BRANCH == current_user.branch_oid)
+    if not _is_admin(current_user):
+        allowed = VisitRepository._resolve_allowed_branches(
+            db, current_user.branch_oid, current_user.area_manager_oid, current_user.allocated_branch_oids
+        )
+        conditions = []
+        if current_user.area_manager_oid is not None:
+            conditions.append(Employee.AREA_MANAGER_OID == current_user.area_manager_oid)
+        if allowed:
+            conditions.append(
+                and_(
+                    Employee.BRANCH.in_(allowed),
+                    or_(
+                        Employee.AREA_MANAGER_OID.is_(None),
+                        Employee.AREA_MANAGER_OID == current_user.area_manager_oid,
+                    ),
+                )
+            )
+        elif current_user.branch_oid is not None:
+            conditions.append(
+                and_(
+                    Employee.BRANCH == current_user.branch_oid,
+                    or_(
+                        Employee.AREA_MANAGER_OID.is_(None),
+                        Employee.AREA_MANAGER_OID == current_user.area_manager_oid,
+                    ),
+                )
+            )
+
+        if conditions:
+            query = query.filter(or_(*conditions))
+        else:
+            return []
 
     results = query.order_by(Employee.name.asc()).all()
 
@@ -107,11 +164,14 @@ def get_employee_track_history(
 
     emp, branch_name = record
 
-    if not _is_admin(current_user) and current_user.branch_oid is not None:
-        if emp.BRANCH != current_user.branch_oid:
+    if not _is_admin(current_user):
+        allowed = VisitRepository._resolve_allowed_branches(
+            db, current_user.branch_oid, current_user.area_manager_oid, current_user.allocated_branch_oids
+        )
+        if not _can_access_officer(current_user, emp, allowed):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied: Officer belongs to another branch",
+                detail="Access denied: Officer is not assigned to this area manager or branch",
             )
 
     return OfficerTrackHistoryResponse(
@@ -144,11 +204,14 @@ def update_employee_track_history(
             detail=f"Field Officer with ID {employee_id} not found",
         )
 
-    if not _is_admin(current_user) and current_user.branch_oid is not None:
-        if employee.BRANCH != current_user.branch_oid:
+    if not _is_admin(current_user):
+        allowed = VisitRepository._resolve_allowed_branches(
+            db, current_user.branch_oid, current_user.area_manager_oid, current_user.allocated_branch_oids
+        )
+        if not _can_access_officer(current_user, employee, allowed):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied: You are not authorized to modify officers in another branch",
+                detail="Access denied: You are not authorized to modify officers not assigned to this area manager or branch",
             )
 
     employee.track_history_enabled = payload.track_history_enabled

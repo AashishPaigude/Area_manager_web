@@ -4,6 +4,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 import logging
 
+from app.models.employee import Employee
 from app.repositories.attendance_repository import AttendanceRepository
 
 logger = logging.getLogger(__name__)
@@ -17,12 +18,13 @@ class DashboardRepository:
     """
 
     @staticmethod
-    @staticmethod
     def get_dashboard_data(
         db: Session,
         target_date: Optional[date] = None,
         period: str = "weekly",
         branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        branch_oids: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         """Fetch consolidated Dashboard data for target_date (defaults to current date).
 
@@ -35,14 +37,20 @@ class DashboardRepository:
         target_date_str = DashboardRepository._format_date(target_date)
 
         # Fetch daily attendance metrics for target_date using single source of truth
-        att_data = AttendanceRepository.get_attendance_list(db, target_date=target_date, user_branch_oid=branch_oid)
+        att_data = AttendanceRepository.get_attendance_list(
+            db, target_date=target_date, user_branch_oid=branch_oid, area_manager_oid=area_manager_oid, user_branch_oids=branch_oids
+        )
         att_summary = att_data.get("summary", {})
         att_present = att_summary.get("present", 0)
         att_absent = att_summary.get("absent", 0)
 
         # Fetch both weekly and monthly visit metrics in one go
-        planned_w, completed_w = DashboardRepository._calculate_period_kpis(db, target_date, "weekly", branch_oid=branch_oid)
-        planned_m, completed_m = DashboardRepository._calculate_period_kpis(db, target_date, "monthly", branch_oid=branch_oid)
+        planned_w, completed_w, sites_w = DashboardRepository._calculate_period_kpis(
+            db, target_date, "weekly", branch_oid=branch_oid, area_manager_oid=area_manager_oid, branch_oids=branch_oids
+        )
+        planned_m, completed_m, sites_m = DashboardRepository._calculate_period_kpis(
+            db, target_date, "monthly", branch_oid=branch_oid, area_manager_oid=area_manager_oid, branch_oids=branch_oids
+        )
         planned_visits_kpi = planned_w if period == "weekly" else planned_m
         completed_visits_kpi = completed_w if period == "weekly" else completed_m
 
@@ -51,7 +59,52 @@ class DashboardRepository:
         # ----------------------------------------------------------------------
         params = {"target_date": str(target_date)}
 
-        if branch_oid is not None:
+        if branch_oids:
+            b_list = ",".join(str(int(b)) for b in branch_oids)
+            if area_manager_oid is not None:
+                scope_cond = f"(e.BRANCH IN ({b_list}) AND (e.AREA_MANAGER_OID IS NULL OR e.AREA_MANAGER_OID = :area_manager_oid))"
+                params["area_manager_oid"] = area_manager_oid
+            else:
+                scope_cond = f"e.BRANCH IN ({b_list})"
+            day_query = text(f"""
+                SELECT r.* 
+                FROM FIELD_OFFICER_DAY_VISIT_REPORTS r
+                JOIN EMPLOYEE e ON r.employee_oid = e.oid
+                WHERE r.visit_date = :target_date AND {scope_cond}
+            """)
+            night_query = text(f"""
+                SELECT r.* 
+                FROM FIELD_OFFICER_NIGHT_VISIT_REPORTS r
+                JOIN EMPLOYEE e ON r.employee_oid = e.oid
+                WHERE r.visit_date = :target_date AND {scope_cond}
+            """)
+            gen_query = text(f"""
+                SELECT r.* 
+                FROM FIELD_OFFICER_GENERAL_VISIT_REPORTS r
+                JOIN EMPLOYEE e ON r.employee_oid = e.oid
+                WHERE r.visit_date = :target_date AND {scope_cond}
+            """)
+        elif area_manager_oid is not None:
+            params["area_manager_oid"] = area_manager_oid
+            day_query = text("""
+                SELECT r.* 
+                FROM FIELD_OFFICER_DAY_VISIT_REPORTS r
+                JOIN EMPLOYEE e ON r.employee_oid = e.oid
+                WHERE r.visit_date = :target_date AND e.AREA_MANAGER_OID = :area_manager_oid
+            """)
+            night_query = text("""
+                SELECT r.* 
+                FROM FIELD_OFFICER_NIGHT_VISIT_REPORTS r
+                JOIN EMPLOYEE e ON r.employee_oid = e.oid
+                WHERE r.visit_date = :target_date AND e.AREA_MANAGER_OID = :area_manager_oid
+            """)
+            gen_query = text("""
+                SELECT r.* 
+                FROM FIELD_OFFICER_GENERAL_VISIT_REPORTS r
+                JOIN EMPLOYEE e ON r.employee_oid = e.oid
+                WHERE r.visit_date = :target_date AND e.AREA_MANAGER_OID = :area_manager_oid
+            """)
+        elif branch_oid is not None:
             params["branch_oid"] = branch_oid
             day_query = text("""
                 SELECT r.* 
@@ -217,6 +270,8 @@ class DashboardRepository:
                 "completedVisitsWeekly": completed_w,
                 "plannedVisitsMonthly": planned_m,
                 "completedVisitsMonthly": completed_m,
+                "sitesCoveredWeekly": sites_w,
+                "sitesCoveredMonthly": sites_m,
             }
             return {
                 "kpi": empty_kpi,
@@ -345,6 +400,8 @@ class DashboardRepository:
             "completedVisitsWeekly": completed_w,
             "plannedVisitsMonthly": planned_m,
             "completedVisitsMonthly": completed_m,
+            "sitesCoveredWeekly": sites_w,
+            "sitesCoveredMonthly": sites_m,
         }
 
         return {
@@ -360,8 +417,13 @@ class DashboardRepository:
     # ----------------------------------------------------------------------
     @staticmethod
     def _calculate_period_kpis(
-        db: Session, target_date: date, period: str = "weekly", branch_oid: Optional[int] = None
-    ) -> Tuple[int, int]:
+        db: Session,
+        target_date: date,
+        period: str = "weekly",
+        branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        branch_oids: Optional[List[int]] = None,
+    ) -> Tuple[int, int, int]:
         """Calculate Planned Visits and Completed Visits for requested period (weekly: Mon-Sun, monthly: 1st-last day)."""
         import calendar
         
@@ -376,7 +438,65 @@ class DashboardRepository:
             end_d = start_d + timedelta(days=6)
 
         # 1. Completed Visits in period from direct source tables + metadata
-        if branch_oid is not None:
+        if branch_oids:
+            b_list = ",".join(str(int(b)) for b in branch_oids)
+            if area_manager_oid is not None:
+                scope_cond = f"(e.BRANCH IN ({b_list}) AND (e.AREA_MANAGER_OID IS NULL OR e.AREA_MANAGER_OID = :area_manager_oid))"
+                kpi_params = {"s": str(start_d), "e": str(end_d), "area_manager_oid": area_manager_oid}
+            else:
+                scope_cond = f"e.BRANCH IN ({b_list})"
+                kpi_params = {"s": str(start_d), "e": str(end_d)}
+            day_cnt = db.execute(text(f"""
+                SELECT COUNT(*) 
+                FROM FIELD_OFFICER_DAY_VISIT_REPORTS r
+                JOIN EMPLOYEE e ON r.employee_oid = e.oid
+                WHERE r.visit_date >= :s AND r.visit_date <= :e AND {scope_cond}
+            """), kpi_params).scalar() or 0
+            night_cnt = db.execute(text(f"""
+                SELECT COUNT(*) 
+                FROM FIELD_OFFICER_NIGHT_VISIT_REPORTS r
+                JOIN EMPLOYEE e ON r.employee_oid = e.oid
+                WHERE r.visit_date >= :s AND r.visit_date <= :e AND {scope_cond}
+            """), kpi_params).scalar() or 0
+            gen_cnt = db.execute(text(f"""
+                SELECT COUNT(*) 
+                FROM FIELD_OFFICER_GENERAL_VISIT_REPORTS r
+                JOIN EMPLOYEE e ON r.employee_oid = e.oid
+                WHERE r.visit_date >= :s AND r.visit_date <= :e AND {scope_cond}
+            """), kpi_params).scalar() or 0
+            meta_cnt = db.execute(text(f"""
+                SELECT COUNT(DISTINCT CONCAT(v.report_type, '_', v.report_oid)) 
+                FROM VISIT_REPORT_METADATA v
+                JOIN EMPLOYEE e ON v.employee_oid = e.oid
+                WHERE v.visit_date >= :s AND v.visit_date <= :e AND {scope_cond}
+            """), kpi_params).scalar() or 0
+        elif area_manager_oid is not None:
+            kpi_params = {"s": str(start_d), "e": str(end_d), "area_manager_oid": area_manager_oid}
+            day_cnt = db.execute(text("""
+                SELECT COUNT(*) 
+                FROM FIELD_OFFICER_DAY_VISIT_REPORTS r
+                JOIN EMPLOYEE e ON r.employee_oid = e.oid
+                WHERE r.visit_date >= :s AND r.visit_date <= :e AND e.AREA_MANAGER_OID = :area_manager_oid
+            """), kpi_params).scalar() or 0
+            night_cnt = db.execute(text("""
+                SELECT COUNT(*) 
+                FROM FIELD_OFFICER_NIGHT_VISIT_REPORTS r
+                JOIN EMPLOYEE e ON r.employee_oid = e.oid
+                WHERE r.visit_date >= :s AND r.visit_date <= :e AND e.AREA_MANAGER_OID = :area_manager_oid
+            """), kpi_params).scalar() or 0
+            gen_cnt = db.execute(text("""
+                SELECT COUNT(*) 
+                FROM FIELD_OFFICER_GENERAL_VISIT_REPORTS r
+                JOIN EMPLOYEE e ON r.employee_oid = e.oid
+                WHERE r.visit_date >= :s AND r.visit_date <= :e AND e.AREA_MANAGER_OID = :area_manager_oid
+            """), kpi_params).scalar() or 0
+            meta_cnt = db.execute(text("""
+                SELECT COUNT(DISTINCT CONCAT(v.report_type, '_', v.report_oid)) 
+                FROM VISIT_REPORT_METADATA v
+                JOIN EMPLOYEE e ON v.employee_oid = e.oid
+                WHERE v.visit_date >= :s AND v.visit_date <= :e AND e.AREA_MANAGER_OID = :area_manager_oid
+            """), kpi_params).scalar() or 0
+        elif branch_oid is not None:
             kpi_params = {"s": str(start_d), "e": str(end_d), "branch_oid": branch_oid}
             day_cnt = db.execute(text("""
                 SELECT COUNT(*) 
@@ -411,8 +531,55 @@ class DashboardRepository:
 
         completed_visits_cnt = max(day_cnt + night_cnt + gen_cnt, meta_cnt)
 
+        # 1b. Distinct sites covered in period
+        if branch_oids:
+            sites_cnt = db.execute(text(f"""
+                SELECT COUNT(DISTINCT v.site_id) 
+                FROM VISIT_REPORT_METADATA v
+                JOIN EMPLOYEE e ON v.employee_oid = e.oid
+                WHERE v.visit_date >= :s AND v.visit_date <= :e AND v.site_id IS NOT NULL AND {scope_cond}
+            """), kpi_params).scalar() or 0
+        elif area_manager_oid is not None:
+            sites_cnt = db.execute(text("""
+                SELECT COUNT(DISTINCT v.site_id) 
+                FROM VISIT_REPORT_METADATA v
+                JOIN EMPLOYEE e ON v.employee_oid = e.oid
+                WHERE v.visit_date >= :s AND v.visit_date <= :e AND v.site_id IS NOT NULL AND e.AREA_MANAGER_OID = :area_manager_oid
+            """), kpi_params).scalar() or 0
+        elif branch_oid is not None:
+            sites_cnt = db.execute(text("""
+                SELECT COUNT(DISTINCT v.site_id) 
+                FROM VISIT_REPORT_METADATA v
+                JOIN EMPLOYEE e ON v.employee_oid = e.oid
+                WHERE v.visit_date >= :s AND v.visit_date <= :e AND v.site_id IS NOT NULL AND e.BRANCH = :branch_oid
+            """), kpi_params).scalar() or 0
+        else:
+            sites_cnt = db.execute(text("""
+                SELECT COUNT(DISTINCT v.site_id) 
+                FROM VISIT_REPORT_METADATA v
+                WHERE v.visit_date >= :s AND v.visit_date <= :e AND v.site_id IS NOT NULL
+            """), kpi_params).scalar() or 0
+
         # 2. Planned Visits in period
-        if branch_oid is not None:
+        if branch_oids:
+            plans_query = text(f"""
+                SELECT v.oid, v.planning_type, v.week_start_date, v.week_end_date, 
+                       v.planning_month, v.planning_year, v.visit_date
+                FROM FIELD_OFFICER_ASSIGNED_VISITS v
+                JOIN EMPLOYEE e ON v.employee_oid = e.oid
+                WHERE {scope_cond}
+            """)
+            plans = db.execute(plans_query, kpi_params).mappings().all()
+        elif area_manager_oid is not None:
+            plans_query = text("""
+                SELECT v.oid, v.planning_type, v.week_start_date, v.week_end_date, 
+                       v.planning_month, v.planning_year, v.visit_date
+                FROM FIELD_OFFICER_ASSIGNED_VISITS v
+                JOIN EMPLOYEE e ON v.employee_oid = e.oid
+                WHERE e.AREA_MANAGER_OID = :area_manager_oid
+            """)
+            plans = db.execute(plans_query, {"area_manager_oid": area_manager_oid}).mappings().all()
+        elif branch_oid is not None:
             plans_query = text("""
                 SELECT v.oid, v.planning_type, v.week_start_date, v.week_end_date, 
                        v.planning_month, v.planning_year, v.visit_date
@@ -454,7 +621,7 @@ class DashboardRepository:
                 """), {"plan_oid": p["oid"]}).scalar() or 0
                 planned_visits_cnt += int(freq_sum)
 
-        return planned_visits_cnt, int(completed_visits_cnt)
+        return planned_visits_cnt, int(completed_visits_cnt), int(sites_cnt)
     @staticmethod
     def _calculate_gps_status(last_update: Optional[Union[datetime, str]]) -> str:
         if not last_update:

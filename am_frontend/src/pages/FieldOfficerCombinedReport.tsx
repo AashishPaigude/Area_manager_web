@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Download, Loader2, AlertTriangle } from "lucide-react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { ArrowLeft, Download, Loader2, AlertTriangle, Calendar, CheckCircle2, BookmarkCheck, UserCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { GeneralVisitReportTemplate } from "@/components/reports/GeneralVisitReportTemplate";
 import { DayVisitReportTemplate } from "@/components/reports/DayVisitReportTemplate";
 import { NightVisitReportTemplate } from "@/components/reports/NightVisitReportTemplate";
@@ -13,8 +14,13 @@ import { toast } from "sonner";
 
 export default function FieldOfficerCombinedReport() {
   const { officerId } = useParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const reportRef = useRef<HTMLDivElement>(null);
+
+  const fromDateParam = searchParams.get("from_date") || undefined;
+  const toDateParam = searchParams.get("to_date") || undefined;
+  const planOidParam = searchParams.get("plan_oid");
 
   const [isDownloading, setIsDownloading] = useState(false);
   const [report, setReport] = useState<CombinedReportResponse | null>(null);
@@ -33,7 +39,9 @@ export default function FieldOfficerCombinedReport() {
     setLoading(true);
     setError(null);
 
-    getCombinedReport(employeeOid)
+    const parsedPlanOid = planOidParam ? Number(planOidParam) : undefined;
+
+    getCombinedReport(employeeOid, fromDateParam, toDateParam, parsedPlanOid)
       .then((data) => {
         setReport(data);
         setLoading(false);
@@ -43,7 +51,7 @@ export default function FieldOfficerCombinedReport() {
         setError(err.message || "Failed to load officer report.");
         setLoading(false);
       });
-  }, [officerId, employeeOid]);
+  }, [officerId, employeeOid, fromDateParam, toDateParam, planOidParam]);
 
   if (loading) {
     return (
@@ -62,7 +70,18 @@ export default function FieldOfficerCombinedReport() {
         </div>
         <h3 className="text-lg font-bold text-slate-900">Failed to Load Report</h3>
         <p className="text-xs text-slate-600">{error || "No report data available for this officer."}</p>
-        <Button onClick={() => navigate("/visits")} variant="outline" size="sm" className="mt-2">
+        <Button
+          onClick={() => {
+            if (window.history.length > 1) {
+              navigate(-1);
+            } else {
+              navigate("/reports");
+            }
+          }}
+          variant="outline"
+          size="sm"
+          className="mt-2"
+        >
           <ArrowLeft className="h-4 w-4 mr-2" /> Back to Reports Roster
         </Button>
       </div>
@@ -78,7 +97,7 @@ export default function FieldOfficerCombinedReport() {
     branch: report.officer.branch || "N/A",
     area: report.officer.area || "N/A",
     shift: report.officer.shift || "Day / Night",
-    reportDate: report.site_visits[0]?.visit_date || "Today",
+    reportDate: report.site_visits[0]?.visit_date || fromDateParam || "Today",
     punchIn: report.officer.punch_in || "—",
     punchOut: report.officer.punch_out || "—",
     hoursWorked:
@@ -89,6 +108,8 @@ export default function FieldOfficerCombinedReport() {
 
   const execSummary = {
     plannedVisits: report.summary.planned_visits,
+    plannedCompleted: report.summary.planned_completed ?? 0,
+    unplannedCompleted: report.summary.unplanned_completed ?? 0,
     completedVisits: report.summary.completed_visits,
     missedVisits: report.summary.missed_visits,
     generalReports: report.summary.general_reports,
@@ -104,6 +125,8 @@ export default function FieldOfficerCombinedReport() {
     checkIn: sv.check_in || "—",
     checkOut: sv.check_out || "—",
     status: sv.status || "Completed",
+    isPlanned: sv.is_planned ?? false,
+    planCode: sv.plan_code || report.plan_info?.plan_code,
   }));
 
   const mappedGeneralReports = report.general_reports.map((g, idx) => {
@@ -116,6 +139,8 @@ export default function FieldOfficerCombinedReport() {
       clientName: clientName,
       visitType: "GENERAL VISIT REPORT",
       type: "general",
+      isPlanned: g.is_planned ?? false,
+      planCode: g.plan_code || report.plan_info?.plan_code,
       reportData: {
         ...g,
         id: g.id || `GV-${indexStr}`,
@@ -154,6 +179,8 @@ export default function FieldOfficerCombinedReport() {
       clientName: clientName,
       visitType: "DAY VISIT REPORT",
       type: "day",
+      isPlanned: d.is_planned ?? false,
+      planCode: d.plan_code || report.plan_info?.plan_code,
       reportData: {
         ...d,
         id: d.id || `DV-${indexStr}`,
@@ -190,6 +217,8 @@ export default function FieldOfficerCombinedReport() {
       clientName: clientName,
       visitType: "NIGHT ROUND REPORT",
       type: "night",
+      isPlanned: n.is_planned ?? false,
+      planCode: n.plan_code || report.plan_info?.plan_code,
       reportData: {
         ...n,
         id: n.id || `NV-${indexStr}`,
@@ -244,7 +273,7 @@ export default function FieldOfficerCombinedReport() {
 
       const options = {
         margin: [8, 8, 8, 8],
-        filename: `Consolidated_Report_${officerInfo.empCode}_14-07-26.pdf`,
+        filename: `Consolidated_Report_${officerInfo.empCode}_${officerInfo.reportDate.replace(/\//g, "-")}.pdf`,
         image: { type: "jpeg", quality: 0.98 },
         html2canvas: {
           scale: 2,
@@ -267,7 +296,7 @@ export default function FieldOfficerCombinedReport() {
 
       const downloadLink = document.createElement("a");
       downloadLink.href = pdfUrl;
-      downloadLink.download = `Consolidated_Report_${officerInfo.empCode}_14-07-26.pdf`;
+      downloadLink.download = `Consolidated_Report_${officerInfo.empCode}_${officerInfo.reportDate.replace(/\//g, "-")}.pdf`;
       document.body.appendChild(downloadLink);
       downloadLink.click();
       document.body.removeChild(downloadLink);
@@ -351,12 +380,32 @@ export default function FieldOfficerCombinedReport() {
 
       {/* Top Controls (Hidden on Print) */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 print:hidden">
-        <Button
-          onClick={() => navigate("/visits")}
-          className="flex items-center gap-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full px-4 h-9 text-xs font-bold shadow-sm"
-        >
-          <ArrowLeft className="h-4 w-4" /> Back
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button
+            onClick={() => {
+              if (window.history.length > 1) {
+                navigate(-1);
+              } else {
+                navigate("/reports");
+              }
+            }}
+            className="flex items-center gap-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full px-4 h-9 text-xs font-bold shadow-sm"
+          >
+            <ArrowLeft className="h-4 w-4" /> Back to Reports
+          </Button>
+
+          {report?.plan_info ? (
+            <Badge className="bg-blue-600 text-white font-bold text-xs py-1 px-3 shadow-xs">
+              <BookmarkCheck className="h-3.5 w-3.5 mr-1" />
+              Planned Report: {report.plan_info.plan_code} ({report.plan_info.planning_type})
+            </Badge>
+          ) : fromDateParam ? (
+            <Badge className="bg-purple-600 text-white font-bold text-xs py-1 px-3 shadow-xs">
+              <Calendar className="h-3.5 w-3.5 mr-1" />
+              Date: {fromDateParam === toDateParam ? fromDateParam : `${fromDateParam} to ${toDateParam}`}
+            </Badge>
+          ) : null}
+        </div>
 
         <div className="flex gap-2">
           <Button
@@ -386,27 +435,38 @@ export default function FieldOfficerCombinedReport() {
             imgClassName="h-11 w-auto object-contain max-w-[140px]"
             titleClassName="text-base font-black tracking-tight text-slate-900 leading-none"
           />
-          <div className="flex justify-between items-end">
+          <div className="flex justify-between items-end mt-2">
             <div className="flex flex-col">
               <h1 className="text-base font-black text-[#1e3a8a] leading-tight uppercase tracking-tight">
-                FIELD OFFICER CONSOLIDATED VISIT REPORT
+                {report.plan_info
+                  ? `FIELD OFFICER PLANNED OPERATIONS REPORT (${report.plan_info.planning_type})`
+                  : "FIELD OFFICER CONSOLIDATED VISIT REPORT"}
               </h1>
               <span className="text-[11px] font-bold text-slate-800 mt-1 uppercase font-mono">
-                CONSOLIDATED ID : CR-2026-PUNE-{officerInfo.empCode}-140726
+                {report.plan_info
+                  ? `PLAN CODE : ${report.plan_info.plan_code} • OFFICER : ${officerInfo.empCode}`
+                  : `CONSOLIDATED ID : CR-${officerInfo.empCode}-${officerInfo.reportDate.replace(/\//g, "")}`}
               </span>
             </div>
             <div className="text-right text-[11px] font-bold text-slate-800 leading-normal uppercase font-mono">
-              REPORT DATE : {officerInfo.reportDate}
+              {report.plan_info?.week_start_date
+                ? `PERIOD : ${report.plan_info.week_start_date} to ${report.plan_info.week_end_date}`
+                : `REPORT DATE : ${officerInfo.reportDate}`}
             </div>
           </div>
         </div>
 
         {/* Officer Information Summary */}
         <div className="mb-6 pdf-avoid-break break-inside-avoid">
-          <div className="bg-[#1e3a8a] text-white text-[11px] font-extrabold uppercase tracking-wider px-4 py-2 rounded-t-lg border-l-4 border-indigo-400">
-            Officer Profile & Shift Summary
+          <div className="bg-[#1e3a8a] text-white text-[11px] font-extrabold uppercase tracking-wider px-4 py-2 rounded-t-lg border-l-4 border-indigo-400 flex justify-between items-center">
+            <span>Officer Profile & Shift Summary</span>
+            {report.plan_info && (
+              <span className="text-[10px] font-bold bg-white/20 px-2 py-0.5 rounded">
+                Plan: {report.plan_info.plan_code} ({report.plan_info.planning_type})
+              </span>
+            )}
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 p-4 border border-t-0 border-slate-200 bg-slate-50/70 rounded-b-lg text-xs">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 border border-t-0 border-slate-200 bg-slate-50/70 rounded-b-lg text-xs">
             <div>
               <label className="block text-[10px] font-bold text-slate-500 uppercase">Officer Name</label>
               <span className="font-bold text-slate-900 text-sm">{officerInfo.name}</span>
@@ -420,8 +480,10 @@ export default function FieldOfficerCombinedReport() {
               <span className="font-bold text-slate-900 font-mono">{officerInfo.branch || "N/A"}</span>
             </div>
             <div>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase">Assigned Shift</label>
-              <span className="font-semibold text-slate-800">{officerInfo.shift}</span>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase">Active Assignment</label>
+              <span className="font-bold text-blue-700">
+                {report.plan_info ? `${report.plan_info.planning_type} Plan (${report.plan_info.plan_code})` : "General / Daily Duty"}
+              </span>
             </div>
             <div>
               <label className="block text-[10px] font-bold text-slate-500 uppercase">Punch In</label>
@@ -444,21 +506,58 @@ export default function FieldOfficerCombinedReport() {
           </div>
         </div>
 
+        {/* Executive Summary Cards */}
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6 pdf-avoid-break break-inside-avoid">
+          <div className="border border-slate-200 rounded-lg p-3 bg-blue-50/50">
+            <span className="text-[9px] font-bold uppercase text-slate-500">Planned Target</span>
+            <div className="text-xl font-black text-blue-700 mt-0.5">{execSummary.plannedVisits}</div>
+            <span className="text-[9px] text-slate-400">Target frequency</span>
+          </div>
+
+          <div className="border border-slate-200 rounded-lg p-3 bg-emerald-50/50">
+            <span className="text-[9px] font-bold uppercase text-slate-500">Planned Done</span>
+            <div className="text-xl font-black text-emerald-700 mt-0.5">{execSummary.plannedCompleted}</div>
+            <span className="text-[9px] text-emerald-600 font-medium">As per assigned plan</span>
+          </div>
+
+          <div className="border border-slate-200 rounded-lg p-3 bg-amber-50/50">
+            <span className="text-[9px] font-bold uppercase text-slate-500">Officer Self-Visits</span>
+            <div className="text-xl font-black text-amber-700 mt-0.5">{execSummary.unplannedCompleted}</div>
+            <span className="text-[9px] text-amber-600 font-medium">Extra / Unplanned</span>
+          </div>
+
+          <div className="border border-slate-200 rounded-lg p-3 bg-indigo-50/50">
+            <span className="text-[9px] font-bold uppercase text-slate-500">Total Visits</span>
+            <div className="text-xl font-black text-indigo-700 mt-0.5">{execSummary.completedVisits}</div>
+            <span className="text-[9px] text-slate-400">All submitted reports</span>
+          </div>
+
+          <div className="border border-slate-200 rounded-lg p-3 bg-purple-50/50">
+            <span className="text-[9px] font-bold uppercase text-slate-500">Sites Covered</span>
+            <div className="text-xl font-black text-purple-700 mt-0.5">{execSummary.totalSitesCovered}</div>
+            <span className="text-[9px] text-slate-400">Unique locations</span>
+          </div>
+        </div>
+
         {/* Site Visit Summary Table */}
         <div className="mb-8 pdf-avoid-break break-inside-avoid">
-          <div className="bg-[#1e3a8a] text-white text-[11px] font-extrabold uppercase tracking-wider px-4 py-2 rounded-t-lg border-l-4 border-indigo-400">
-            Site Visit Summary Roster
+          <div className="bg-[#1e3a8a] text-white text-[11px] font-extrabold uppercase tracking-wider px-4 py-2 rounded-t-lg border-l-4 border-indigo-400 flex justify-between items-center">
+            <span>Site Visit Summary Roster</span>
+            <span className="text-[10px] font-normal opacity-80">
+              {siteSummary.length} Visited Sites ({execSummary.plannedCompleted} Planned + {execSummary.unplannedCompleted} Self-Visits)
+            </span>
           </div>
           <div className="overflow-x-auto border border-t-0 border-slate-200 rounded-b-lg">
             <table className="w-full text-xs text-left">
               <thead>
                 <tr className="bg-slate-200 border-b border-slate-300 text-slate-900 font-bold">
-                  <th className="p-2.5 text-center w-14">Sr No</th>
+                  <th className="p-2.5 text-center w-12">#</th>
                   <th className="p-2.5">Site Name</th>
                   <th className="p-2.5">Visit Type</th>
+                  <th className="p-2.5">Category</th>
                   <th className="p-2.5 text-center w-24">Check In</th>
                   <th className="p-2.5 text-center w-24">Check Out</th>
-                  <th className="p-2.5 text-center w-28">Status</th>
+                  <th className="p-2.5 text-center w-24">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
@@ -467,6 +566,17 @@ export default function FieldOfficerCombinedReport() {
                     <td className="p-2.5 text-center font-semibold text-slate-600">{s.srNo}</td>
                     <td className="p-2.5 font-bold text-slate-900">{s.siteName}</td>
                     <td className="p-2.5 font-semibold text-slate-700">{s.visitType}</td>
+                    <td className="p-2.5">
+                      {s.isPlanned ? (
+                        <span className="inline-flex items-center gap-1 font-bold text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                          <BookmarkCheck className="h-3 w-3" /> As Per Plan
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 font-bold text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                          <UserCheck className="h-3 w-3" /> Officer Self-Visit
+                        </span>
+                      )}
+                    </td>
                     <td className="p-2.5 text-center font-mono font-medium text-emerald-700">{s.checkIn}</td>
                     <td className="p-2.5 text-center font-mono font-medium text-slate-600">{s.checkOut}</td>
                     <td className="p-2.5 text-center">
@@ -505,9 +615,20 @@ export default function FieldOfficerCombinedReport() {
                       {item.siteName}
                     </span>
                   </div>
-                  <span className="text-xs font-extrabold text-slate-700 uppercase tracking-wider shrink-0 leading-normal">
-                    {item.visitType}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {item.isPlanned ? (
+                      <span className="inline-flex items-center gap-1 font-bold text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                        <BookmarkCheck className="h-3 w-3" /> As Per Plan
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 font-bold text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                        <UserCheck className="h-3 w-3" /> Officer Self-Visit
+                      </span>
+                    )}
+                    <span className="text-xs font-extrabold text-slate-700 uppercase tracking-wider shrink-0 leading-normal">
+                      {item.visitType}
+                    </span>
+                  </div>
                 </div>
 
                 {/* Row 2: Report ID & Date/Time */}

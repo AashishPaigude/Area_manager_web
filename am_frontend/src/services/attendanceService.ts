@@ -41,10 +41,11 @@ export const getAttendance = async (
   date?: string,
   status?: string,
   startDate?: string,
-  endDate?: string
+  endDate?: string,
+  branchOid?: number | null
 ): Promise<AttendanceResponse> => {
   try {
-    const params: Record<string, string> = {};
+    const params: Record<string, any> = {};
     if (startDate && endDate) {
       params.start_date = startDate;
       params.end_date = endDate;
@@ -55,6 +56,9 @@ export const getAttendance = async (
       params.status = status;
     } else if (status === 'ALL') {
       params.status = 'ALL';
+    }
+    if (branchOid !== undefined && branchOid !== null) {
+      params.branch_oid = branchOid;
     }
     const response = await api.get<AttendanceResponse>('/api/v1/attendance', { params });
     return response.data;

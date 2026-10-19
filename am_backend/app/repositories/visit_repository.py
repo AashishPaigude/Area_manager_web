@@ -1,8 +1,8 @@
 import calendar
 from datetime import date
 from typing import List, Optional, Dict, Any
-from sqlalchemy.orm import Session
-from sqlalchemy import func, or_, text
+from sqlalchemy.orm import Session, aliased
+from sqlalchemy import func, or_, and_, text
 from app.models.employee import Employee
 from app.models.branch import Branch
 from app.models.client import Client
@@ -10,6 +10,7 @@ from app.models.site import Site
 from app.models.assigned_visit import FieldOfficerAssignedVisits
 from app.models.visit_frequency import FieldOfficerVisitFrequency
 from app.models.visit_report_metadata import VisitReportMetadata
+from app.models.new_client_visit import FieldOfficerNewClientVisits
 
 
 class VisitRepository:
@@ -17,36 +18,141 @@ class VisitRepository:
     # --- Master Data Queries ---
 
     @staticmethod
-    def get_active_field_officers(db: Session, user_branch_oid: Optional[int] = None) -> List[Employee]:
+    def get_active_field_officers(
+        db: Session, 
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        allocated_branch_oids: Optional[List[int]] = None,
+    ) -> List[Employee]:
         """
-        Retrieve active Field Officers (active = 1, DESIGNATION = 19), optionally scoped by user_branch_oid.
+        Retrieve active Field Officers (active = 1, DESIGNATION = 19), optionally scoped by area_manager_oid or user_branch_oid.
         """
         query = db.query(Employee).filter(Employee.active == 1, Employee.DESIGNATION == 19)
-        if user_branch_oid is not None:
-            query = query.filter(Employee.BRANCH == user_branch_oid)
+        allowed_branches = VisitRepository._resolve_allowed_branches(
+            db, user_branch_oid, area_manager_oid, allocated_branch_oids
+        )
+        conditions = []
+        if allowed_branches is not None:
+            if len(allowed_branches) == 0:
+                return []
+            if area_manager_oid is not None:
+                conditions.append(
+                    and_(
+                        Employee.BRANCH.in_(allowed_branches),
+                        or_(
+                            Employee.AREA_MANAGER_OID.is_(None),
+                            Employee.AREA_MANAGER_OID == area_manager_oid,
+                        ),
+                    )
+                )
+            else:
+                conditions.append(Employee.BRANCH.in_(allowed_branches))
+        elif area_manager_oid is not None:
+            if user_branch_oid is not None:
+                conditions.append(
+                    and_(
+                        Employee.BRANCH == user_branch_oid,
+                        or_(
+                            Employee.AREA_MANAGER_OID.is_(None),
+                            Employee.AREA_MANAGER_OID == area_manager_oid,
+                        ),
+                    )
+                )
+            else:
+                conditions.append(
+                    or_(
+                        Employee.AREA_MANAGER_OID.is_(None),
+                        Employee.AREA_MANAGER_OID == area_manager_oid,
+                    )
+                )
+        elif user_branch_oid is not None:
+            conditions.append(Employee.BRANCH == user_branch_oid)
+
+        if conditions:
+            query = query.filter(or_(*conditions))
+        elif allowed_branches is None and user_branch_oid is None and area_manager_oid is None:
+            # Unrestricted for admin
+            pass
+        else:
+            return []
         return query.order_by(Employee.name.asc()).all()
 
     @staticmethod
-    def get_branches(db: Session, user_branch_oid: Optional[int] = None) -> List[Branch]:
+    def _resolve_allowed_branches(
+        db: Session,
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        allocated_branch_oids: Optional[List[int]] = None,
+    ) -> Optional[List[int]]:
+        """Resolve the list of branch OIDs accessible to the user context.
+        Admin (all None) -> returns None (unrestricted).
+        Distinguishes explicit [] (zero branches allowed) from None (missing allocation).
         """
-        Retrieve branches from the BRANCH master table, optionally scoped by user_branch_oid.
+        # Case 1: Explicit permitted-branch list provided (including explicit [] for zero branches)
+        if allocated_branch_oids is not None:
+            return sorted(list(set(allocated_branch_oids)))
+
+        # Case 2: Missing allocation value (allocated_branch_oids is None): fallback to DB allocation query
+        if area_manager_oid is not None:
+            alloc_branches = [
+                r for r in db.execute(text("""
+                    SELECT a.BRANCH_OID 
+                    FROM AREA_MANAGER_BRANCH_ALLOCATION a
+                    JOIN AREA_MANAGER am ON am.STAFF = a.STAFF_OID
+                    WHERE am.oid = :area_manager_oid
+                """), {"area_manager_oid": area_manager_oid}).scalars().all()
+                if r is not None
+            ]
+            if alloc_branches:
+                return sorted(list(set(alloc_branches)))
+
+        # Case 3: Legacy single-branch fallback for Area Managers without allocation rows
+        if user_branch_oid is not None:
+            return [user_branch_oid]
+
+        # Case 4: Unrestricted Admin sentinel (all None)
+        return None
+
+    @staticmethod
+    def get_branches(
+        db: Session,
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        allocated_branch_oids: Optional[List[int]] = None,
+    ) -> List[Branch]:
+        """
+        Retrieve branches from the BRANCH master table, optionally scoped by user_branch_oid / area_manager_oid.
         """
         query = db.query(Branch)
-        if user_branch_oid is not None:
-            query = query.filter(Branch.oid == user_branch_oid)
+        allowed = VisitRepository._resolve_allowed_branches(
+            db, user_branch_oid=user_branch_oid, area_manager_oid=area_manager_oid, allocated_branch_oids=allocated_branch_oids
+        )
+        if allowed is not None:
+            if len(allowed) == 0:
+                return []
+            query = query.filter(Branch.oid.in_(allowed))
         return query.order_by(Branch.name.asc()).all()
 
     @staticmethod
-    def get_clients(db: Session, user_branch_oid: Optional[int] = None) -> List[Client]:
+    def get_clients(
+        db: Session,
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        allocated_branch_oids: Optional[List[int]] = None,
+    ) -> List[Client]:
         """
-        Retrieve clients from the CLIENTT master table, optionally scoped by user_branch_oid.
+        Retrieve clients from the CLIENTT master table, optionally scoped by user_branch_oid / area_manager_oid.
         """
-        if user_branch_oid is not None:
-            b_oids = [6, 3] if user_branch_oid == 6 else [user_branch_oid]
+        allowed = VisitRepository._resolve_allowed_branches(
+            db, user_branch_oid=user_branch_oid, area_manager_oid=area_manager_oid, allocated_branch_oids=allocated_branch_oids
+        )
+        if allowed is not None:
+            if len(allowed) == 0:
+                return []
             return (
                 db.query(Client)
                 .join(Site, Site.CLIENTT == Client.oid)
-                .filter(Site.BRANCH.in_(b_oids))
+                .filter(Site.BRANCH.in_(allowed))
                 .distinct()
                 .order_by(Client.name.asc())
                 .all()
@@ -58,16 +164,27 @@ class VisitRepository:
         db: Session,
         branch_oid: Optional[int] = None,
         client_oid: Optional[int] = None,
-        user_branch_oid: Optional[int] = None
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        allocated_branch_oids: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve sites from the SITE table with optional branch_oid, client_oid, and user_branch_oid filtering.
+        Retrieve sites from the SITE table with optional branch_oid, client_oid, user_branch_oid, and area_manager_oid filtering.
         """
         query = db.query(Site)
-        effective_branch = user_branch_oid if user_branch_oid is not None else branch_oid
-        if effective_branch is not None:
-            b_oids = [6, 3] if effective_branch == 6 else [effective_branch]
-            query = query.filter(Site.BRANCH.in_(b_oids))
+        allowed = VisitRepository._resolve_allowed_branches(
+            db, user_branch_oid=user_branch_oid, area_manager_oid=area_manager_oid, allocated_branch_oids=allocated_branch_oids
+        )
+
+        if branch_oid is not None:
+            if allowed is not None and branch_oid not in allowed:
+                return []
+            query = query.filter(Site.BRANCH == branch_oid)
+        elif allowed is not None:
+            if len(allowed) == 0:
+                return []
+            query = query.filter(Site.BRANCH.in_(allowed))
+
         if client_oid is not None:
             query = query.filter(Site.CLIENTT == client_oid)
 
@@ -165,24 +282,71 @@ class VisitRepository:
         planning_year: Optional[int] = None,
         week_start_date: Optional[date] = None,
         week_end_date: Optional[date] = None,
-        user_branch_oid: Optional[int] = None
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        creator_type: Optional[str] = None,
+        allocated_branch_oids: Optional[List[int]] = None,
+        branch_oid: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve visit plans with aggregated total_sites, total_visits, and calculated visits_done, optionally scoped by user_branch_oid.
+        Retrieve visit plans with aggregated total_sites, total_visits, and calculated visits_done, optionally scoped by area_manager_oid or user_branch_oid.
         """
+        # Resolve allowed branches first for early authorization exit
+        allowed = VisitRepository._resolve_allowed_branches(
+            db, user_branch_oid=user_branch_oid, area_manager_oid=area_manager_oid, allocated_branch_oids=allocated_branch_oids
+        )
+        if branch_oid is not None:
+            if allowed is not None and branch_oid not in allowed:
+                return []
+        elif allowed is not None and len(allowed) == 0:
+            return []
+
+        Creator = aliased(Employee)
+
         query = (
             db.query(
                 FieldOfficerAssignedVisits,
                 Employee.name.label("field_officer_name"),
+                Creator.name.label("creator_name"),
                 func.count(FieldOfficerVisitFrequency.oid).label("total_sites"),
-                func.coalesce(func.sum(FieldOfficerVisitFrequency.visit_frequency), 0).label("total_visits")
+                func.coalesce(func.sum(FieldOfficerVisitFrequency.visit_frequency), 0).label("total_visits"),
+                Employee.BRANCH.label("branch_oid"),
             )
             .outerjoin(Employee, FieldOfficerAssignedVisits.employee_oid == Employee.oid)
+            .outerjoin(Creator, FieldOfficerAssignedVisits.created_by == Creator.oid)
             .outerjoin(FieldOfficerVisitFrequency, FieldOfficerAssignedVisits.oid == FieldOfficerVisitFrequency.plan_oid)
         )
 
         # Filters
-        if user_branch_oid is not None:
+        if branch_oid is not None:
+            if area_manager_oid is not None:
+                query = query.filter(
+                    and_(
+                        Employee.BRANCH == branch_oid,
+                        or_(
+                            Employee.AREA_MANAGER_OID.is_(None),
+                            Employee.AREA_MANAGER_OID == area_manager_oid,
+                        ),
+                    )
+                )
+            else:
+                query = query.filter(Employee.BRANCH == branch_oid)
+        elif allowed is not None:
+            if len(allowed) == 0:
+                return []
+            if area_manager_oid is not None:
+                query = query.filter(
+                    and_(
+                        Employee.BRANCH.in_(allowed),
+                        or_(
+                            Employee.AREA_MANAGER_OID.is_(None),
+                            Employee.AREA_MANAGER_OID == area_manager_oid,
+                        ),
+                    )
+                )
+            else:
+                query = query.filter(Employee.BRANCH.in_(allowed))
+        elif user_branch_oid is not None:
             query = query.filter(Employee.BRANCH == user_branch_oid)
         if planning_type:
             query = query.filter(FieldOfficerAssignedVisits.planning_type == planning_type)
@@ -190,12 +354,27 @@ class VisitRepository:
             query = query.filter(FieldOfficerAssignedVisits.employee_oid == employee_oid)
         if status:
             query = query.filter(FieldOfficerAssignedVisits.status == status)
+        if creator_type and creator_type.upper() != "ALL":
+            ctype = creator_type.upper()
+            if ctype == "SELF":
+                query = query.filter(
+                    FieldOfficerAssignedVisits.created_by.isnot(None),
+                    FieldOfficerAssignedVisits.created_by == FieldOfficerAssignedVisits.employee_oid
+                )
+            elif ctype == "MANAGER":
+                query = query.filter(
+                    or_(
+                        FieldOfficerAssignedVisits.created_by.is_(None),
+                        FieldOfficerAssignedVisits.created_by != FieldOfficerAssignedVisits.employee_oid
+                    )
+                )
         if search:
             search_pattern = f"%{search}%"
             query = query.filter(
                 or_(
                     FieldOfficerAssignedVisits.plan_code.ilike(search_pattern),
-                    Employee.name.ilike(search_pattern)
+                    Employee.name.ilike(search_pattern),
+                    Creator.name.ilike(search_pattern)
                 )
             )
         if planning_month is not None:
@@ -208,32 +387,32 @@ class VisitRepository:
             if week_start_date is not None and week_end_date is not None:
                 # Matches WEEKLY plans overlapping range or SINGLE plans falling inside date range
                 date_conditions.append(
-                    FieldOfficerAssignedVisits.week_start_date >= week_start_date
-                )
-                date_conditions.append(
-                    FieldOfficerAssignedVisits.week_end_date <= week_end_date
+                    and_(
+                        FieldOfficerAssignedVisits.week_start_date <= week_end_date,
+                        FieldOfficerAssignedVisits.week_end_date >= week_start_date
+                    )
                 )
                 date_conditions.append(
                     FieldOfficerAssignedVisits.visit_date.between(week_start_date, week_end_date)
                 )
             elif week_start_date is not None:
-                date_conditions.append(FieldOfficerAssignedVisits.week_start_date >= week_start_date)
+                date_conditions.append(FieldOfficerAssignedVisits.week_end_date >= week_start_date)
                 date_conditions.append(FieldOfficerAssignedVisits.visit_date >= week_start_date)
             elif week_end_date is not None:
-                date_conditions.append(FieldOfficerAssignedVisits.week_end_date <= week_end_date)
+                date_conditions.append(FieldOfficerAssignedVisits.week_start_date <= week_end_date)
                 date_conditions.append(FieldOfficerAssignedVisits.visit_date <= week_end_date)
 
             query = query.filter(or_(*date_conditions))
 
         query = (
-            query.group_by(FieldOfficerAssignedVisits.oid, Employee.name)
+            query.group_by(FieldOfficerAssignedVisits.oid, Employee.name, Creator.name, Employee.BRANCH)
             .order_by(FieldOfficerAssignedVisits.created_at.desc(), FieldOfficerAssignedVisits.oid.desc())
         )
 
         results = query.all()
 
         data = []
-        for plan, officer_name, total_sites, total_visits in results:
+        for plan, officer_name, creator_name, total_sites, total_visits, plan_branch_oid in results:
             start_d, end_d = VisitRepository.get_plan_date_range(plan)
 
             freq_sites = (
@@ -253,6 +432,25 @@ class VisitRepository:
                         end_d=end_d,
                     )
 
+            # Aggregate stats from custom client visits (FIELD_OFFICER_NEW_CLIENT_VISITS)
+            cv_stats = (
+                db.query(
+                    func.count(FieldOfficerNewClientVisits.oid),
+                    func.coalesce(func.sum(FieldOfficerNewClientVisits.visit_frequency), 0)
+                )
+                .filter(FieldOfficerNewClientVisits.plan_oid == plan.oid)
+                .first()
+            )
+            cv_sites = cv_stats[0] if cv_stats else 0
+            cv_visits = cv_stats[1] if cv_stats else 0
+
+            combined_total_sites = (total_sites or 0) + cv_sites
+            combined_total_visits = int(total_visits or 0) + int(cv_visits)
+
+            is_self = bool(plan.created_by is not None and plan.created_by == plan.employee_oid)
+            plan_creator_type = "SELF" if is_self else "MANAGER"
+            display_creator_name = officer_name if is_self else (creator_name or "Area Manager")
+
             data.append({
                 "oid": plan.oid,
                 "plan_code": plan.plan_code,
@@ -264,15 +462,21 @@ class VisitRepository:
                 "visit_date": plan.visit_date,
                 "employee_oid": plan.employee_oid,
                 "field_officer_name": officer_name,
+                "branch_oid": plan_branch_oid,
                 "planning_method": plan.planning_method,
                 "status": plan.status,
-                "total_sites": total_sites,
-                "total_visits": int(total_visits),
+                "total_sites": combined_total_sites,
+                "total_visits": combined_total_visits,
                 "visits_done": plan_visits_done,
+                "created_by": plan.created_by,
+                "plan_creator_type": plan_creator_type,
+                "creator_name": display_creator_name,
                 "created_at": plan.created_at,
                 "updated_at": plan.updated_at
             })
         return data
+
+    list_plans = get_visit_plans
 
     @staticmethod
     def create_assigned_plan(
@@ -372,6 +576,32 @@ class VisitRepository:
                 "visits_done": site_visits_done
             })
 
+        # Get custom visits from FIELD_OFFICER_NEW_CLIENT_VISITS
+        custom_records = (
+            db.query(FieldOfficerNewClientVisits)
+            .filter(FieldOfficerNewClientVisits.plan_oid == plan_oid)
+            .order_by(FieldOfficerNewClientVisits.oid.asc())
+            .all()
+        )
+        custom_visits_data = []
+        for cv in custom_records:
+            br = db.query(Branch).filter(Branch.oid == cv.branch_oid).first() if cv.branch_oid else None
+            total_visits_count += cv.visit_frequency
+            custom_visits_data.append({
+                "oid": cv.oid,
+                "plan_oid": cv.plan_oid,
+                "branch_oid": cv.branch_oid,
+                "branch_name": br.name if br else None,
+                "client_name": cv.client_name,
+                "site_name": cv.site_name,
+                "address": cv.address,
+                "latitude": cv.latitude,
+                "longitude": cv.longitude,
+                "visit_frequency": cv.visit_frequency,
+                "created_by": cv.created_by,
+                "is_custom_location": True,
+            })
+
         return {
             "oid": plan.oid,
             "plan_code": plan.plan_code,
@@ -385,12 +615,18 @@ class VisitRepository:
             "field_officer_name": officer_name,
             "planning_method": plan.planning_method,
             "status": plan.status,
-            "total_sites": len(sites_data),
+            "total_sites": len(sites_data) + len(custom_visits_data),
             "total_visits": total_visits_count,
             "visits_done": plan_visits_done_total,
+            "created_by": plan.created_by,
+            "plan_creator_type": "SELF" if (plan.created_by is not None and plan.created_by == plan.employee_oid) else "MANAGER",
+            "creator_name": officer_name if (plan.created_by is not None and plan.created_by == plan.employee_oid) else (
+                (db.query(Employee.name).filter(Employee.oid == plan.created_by).scalar() if plan.created_by else None) or "Area Manager"
+            ),
             "created_at": plan.created_at,
             "updated_at": plan.updated_at,
-            "sites": sites_data
+            "sites": sites_data,
+            "custom_visits": custom_visits_data,
         }
 
     @staticmethod
@@ -433,6 +669,24 @@ class VisitRepository:
                 visit_frequency=freq_val
             )
             db.add(new_freq)
+
+        # Copy custom visit records
+        custom_visits = db.query(FieldOfficerNewClientVisits).filter(FieldOfficerNewClientVisits.plan_oid == original_plan_oid).all()
+        for cv in custom_visits:
+            freq_val = 1 if original.planning_type == "SINGLE" else cv.visit_frequency
+            new_cv = FieldOfficerNewClientVisits(
+                plan_oid=new_plan.oid,
+                branch_oid=cv.branch_oid,
+                client_name=cv.client_name,
+                site_name=cv.site_name,
+                address=cv.address,
+                latitude=cv.latitude,
+                longitude=cv.longitude,
+                visit_frequency=freq_val,
+                created_by=new_plan.created_by
+            )
+            db.add(new_cv)
+
         db.commit()
 
         return new_plan
@@ -462,10 +716,13 @@ class VisitRepository:
             plan.planning_year = planning_year if planning_type == "MONTHLY" else None
             plan.visit_date = visit_date if planning_type == "SINGLE" else None
 
-            # If changed to SINGLE, enforce frequency = 1 for all existing site frequencies
+            # If changed to SINGLE, enforce frequency = 1 for all existing site frequencies and custom visits
             if planning_type == "SINGLE":
                 db.query(FieldOfficerVisitFrequency).filter(
                     FieldOfficerVisitFrequency.plan_oid == plan_oid
+                ).update({"visit_frequency": 1})
+                db.query(FieldOfficerNewClientVisits).filter(
+                    FieldOfficerNewClientVisits.plan_oid == plan_oid
                 ).update({"visit_frequency": 1})
 
             db.commit()
@@ -635,3 +892,68 @@ class VisitRepository:
             db.commit()
             db.refresh(plan)
         return plan
+
+    # --- Custom Visit (New Client/Site) Queries ---
+
+    @staticmethod
+    def add_custom_visit(
+        db: Session,
+        plan_oid: int,
+        branch_oid: int,
+        client_name: str,
+        site_name: str,
+        address: Optional[str] = None,
+        latitude: Optional[Any] = None,
+        longitude: Optional[Any] = None,
+        visit_frequency: int = 1,
+        created_by: Optional[int] = None,
+    ) -> FieldOfficerNewClientVisits:
+        """Add a custom new client/site visit record to FIELD_OFFICER_NEW_CLIENT_VISITS."""
+        record = FieldOfficerNewClientVisits(
+            plan_oid=plan_oid,
+            branch_oid=branch_oid,
+            client_name=client_name.strip(),
+            site_name=site_name.strip(),
+            address=address.strip() if address else None,
+            latitude=latitude,
+            longitude=longitude,
+            visit_frequency=visit_frequency,
+            created_by=created_by,
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        return record
+
+    @staticmethod
+    def get_custom_visits_by_plan(db: Session, plan_oid: int) -> List[FieldOfficerNewClientVisits]:
+        """Retrieve all custom visit records for a plan ordered by oid asc."""
+        return (
+            db.query(FieldOfficerNewClientVisits)
+            .filter(FieldOfficerNewClientVisits.plan_oid == plan_oid)
+            .order_by(FieldOfficerNewClientVisits.oid.asc())
+            .all()
+        )
+
+    @staticmethod
+    def get_custom_visit_by_oid(db: Session, custom_visit_oid: int) -> Optional[FieldOfficerNewClientVisits]:
+        """Retrieve a custom visit record by primary key oid."""
+        return (
+            db.query(FieldOfficerNewClientVisits)
+            .filter(FieldOfficerNewClientVisits.oid == custom_visit_oid)
+            .first()
+        )
+
+    @staticmethod
+    def delete_custom_visit(db: Session, custom_visit_oid: int) -> bool:
+        """Delete a custom visit record from FIELD_OFFICER_NEW_CLIENT_VISITS."""
+        record = (
+            db.query(FieldOfficerNewClientVisits)
+            .filter(FieldOfficerNewClientVisits.oid == custom_visit_oid)
+            .first()
+        )
+        if record:
+            db.delete(record)
+            db.commit()
+            return True
+        return False

@@ -2,6 +2,7 @@ from typing import Any, Dict
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 import logging
+import bcrypt
 
 from app.enums.role_type import RoleType
 from app.schemas.user_context import UserContext
@@ -41,9 +42,10 @@ class UserService:
         # Role 1: Area Manager (qrda_areamanager)
         if role_str == RoleType.AREA_MANAGER.value or role_str == "qrda_areamanager":
             branch_oid = user_data.get("branch_oid")
-            if branch_oid is None:
+            area_manager_oid = user_data.get("area_manager_oid")
+            if area_manager_oid is None and branch_oid is None:
                 logger.error(
-                    f"Area Manager user_account_oid {user_account_oid} has no AREA_MANAGER/STAFF/BRANCH mapping."
+                    f"Area Manager user_account_oid {user_account_oid} has no AREA_MANAGER/STAFF mapping."
                 )
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -68,12 +70,23 @@ class UserService:
             branch_oid = user_data.get("branch_oid")
             role_val = raw_role
 
+        staff_oid = user_data.get("staff_oid")
+        allocated_branches = []
+        if staff_oid:
+            allocated_branches = UserRepository.get_allocated_branches_for_staff(db, staff_oid)
+        if not allocated_branches and branch_oid is not None:
+            allocated_branches = [branch_oid]
+
         return UserContext(
             user_account_oid=user_data["user_account_oid"],
             user_id=user_data["user_id"],
             name=user_data["name"],
             app_role=role_val,
             branch_oid=branch_oid,
+            branch_name=user_data.get("branch_name"),
+            area_manager_oid=user_data.get("area_manager_oid"),
+            staff_oid=staff_oid,
+            allocated_branch_oids=allocated_branches,
         )
 
     @staticmethod
@@ -99,5 +112,63 @@ class UserService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"User account with user_id '{user_id}' not found",
             )
-        return UserService.get_user_context(db, user_data["user_account_oid"])
+        ctx = UserService.get_user_context(db, user_data["user_account_oid"])
+        return UserContext(
+            user_account_oid=ctx.user_account_oid,
+            user_id=user_id,
+            name=ctx.name,
+            app_role=ctx.app_role,
+            branch_oid=ctx.branch_oid,
+            branch_name=ctx.branch_name,
+            area_manager_oid=ctx.area_manager_oid,
+            staff_oid=ctx.staff_oid,
+            allocated_branch_oids=ctx.allocated_branch_oids,
+        )
+
+    @staticmethod
+    def authenticate_user(db: Session, username: str, password: str) -> UserContext:
+        """Authenticate user credentials directly against USER_CREDENTIALS user_id and password columns.
+
+        Args:
+            db: SQLAlchemy Session
+            username: user_id from USER_CREDENTIALS (or staff emp_code / user_account user_id)
+            password: Plaintext password string from USER_CREDENTIALS password column
+
+        Returns:
+            UserContext on successful authentication.
+
+        Raises:
+            HTTPException 401: Invalid credentials.
+            HTTPException 403: Account deactivated.
+        """
+        clean_user = username.strip() if username else ""
+        if not clean_user or not password:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Username and password are required",
+            )
+
+        creds = UserRepository.get_credentials_by_user_id(db, clean_user)
+        if not creds:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid username or password",
+            )
+
+        if creds.get("is_active") == 0:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User account is deactivated",
+            )
+
+        stored_password = str(creds.get("password") or "")
+        if password != stored_password and password.strip() != stored_password.strip():
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid username or password",
+            )
+
+        user_account_oid = creds["user_account_oid"]
+        return UserService.get_user_context(db, user_account_oid)
+
 

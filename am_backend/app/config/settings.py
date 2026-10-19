@@ -6,15 +6,15 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "INFO"
 
-    # Database configuration
-    DB_HOST: str = "ls-f9c9360d5370cd0204f646fda0528d784e2734eb.cnjj3r9rm87p.ap-south-1.rds.amazonaws.com"
+    # Database configuration (injected via .env or system environment variables)
+    DB_HOST: str = "localhost"
     DB_PORT: int = 3306
-    DB_USER: str = "proddbadmin"
-    DB_PASSWORD: str = "ProdDbAdmin##098"
+    DB_USER: str = "root"
+    DB_PASSWORD: str = ""
     DB_NAME: str = "qr_digital_attendance"
 
     # CORS settings
-    ALLOWED_ORIGINS: str = "http://localhost:8080,http://localhost:5173,http://localhost:3000,http://127.0.0.1:8080"
+    ALLOWED_ORIGINS: str = "http://localhost:8084,http://127.0.0.1:8084,http://localhost:8080,http://localhost:5173,http://localhost:3000,http://127.0.0.1:8080"
 
     model_config = SettingsConfigDict(
         env_file=".env",

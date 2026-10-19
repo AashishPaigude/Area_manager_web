@@ -14,6 +14,8 @@ from app.models.assigned_visit import FieldOfficerAssignedVisits
 from app.models.visit_frequency import FieldOfficerVisitFrequency
 from app.models.site_gate_qrcode import SiteGateQrcode
 from app.models.field_officer_track_history_config import FieldOfficerTrackHistoryConfig
+from app.models.area_manager_branch_allocation import AreaManagerBranchAllocation
+from app.models.new_client_visit import FieldOfficerNewClientVisits
 
 __all__ = [
     "Employee",
@@ -34,7 +36,9 @@ __all__ = [
     "VisitReportMetadata",
     "FieldOfficerAssignedVisits",
     "FieldOfficerVisitFrequency",
+    "FieldOfficerNewClientVisits",
     "FieldOfficerTrackHistoryConfig",
+    "AreaManagerBranchAllocation",
 ]
 
 

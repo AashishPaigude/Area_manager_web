@@ -55,11 +55,19 @@ class TrackingService:
         db: Session,
         branch_oid: Optional[int] = None,
         search: Optional[str] = None,
-        user_branch_oid: Optional[int] = None
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        user_branch_oids: Optional[List[int]] = None,
     ) -> LiveTrackingResponse:
         """Construct real-time officer roster payload matching LiveTracking page contract."""
-        effective_branch = user_branch_oid if user_branch_oid is not None else branch_oid
-        officers = TrackingRepository.get_active_field_officers(db, user_branch_oid=effective_branch)
+        kwargs = {}
+        if area_manager_oid is not None:
+            kwargs["area_manager_oid"] = area_manager_oid
+        if user_branch_oids is not None:
+            kwargs["user_branch_oids"] = user_branch_oids
+        officers = TrackingRepository.get_active_field_officers(
+            db, user_branch_oid=user_branch_oid, **kwargs
+        )
 
         # Apply optional name search filtering
         if search:
@@ -246,7 +254,9 @@ class TrackingService:
         employee_oid: int,
         date_str: str,
         user_branch_oid: Optional[int] = None,
-        trip_number: Optional[int] = None
+        trip_number: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        user_branch_oids: Optional[List[int]] = None,
     ) -> TrackHistoryResponse:
         """Construct full Route History payload partitioned by individual Punch In / Out trips."""
         try:
@@ -259,8 +269,18 @@ class TrackingService:
         if not employee:
             raise AppBaseException(f"Field Officer with ID {employee_oid} not found", code="OFFICER_NOT_FOUND", status_code=404)
 
-        # Cross-branch authorization check
-        if user_branch_oid is not None and employee.BRANCH != user_branch_oid:
+        # Hierarchy / cross-branch authorization check
+        if user_branch_oids is not None:
+            is_allowed = (
+                (area_manager_oid is not None and employee.AREA_MANAGER_OID == area_manager_oid)
+                or (employee.BRANCH in user_branch_oids and (employee.AREA_MANAGER_OID is None or employee.AREA_MANAGER_OID == area_manager_oid))
+            )
+            if not is_allowed:
+                raise AppBaseException(f"Access denied: Field Officer {employee_oid} belongs to an unassigned branch", code="FORBIDDEN_BRANCH", status_code=403)
+        elif area_manager_oid is not None:
+            if employee.AREA_MANAGER_OID != area_manager_oid:
+                raise AppBaseException(f"Access denied: Field Officer {employee_oid} is not assigned to this area manager", code="FORBIDDEN_OFFICER", status_code=403)
+        elif user_branch_oid is not None and employee.BRANCH != user_branch_oid:
             raise AppBaseException(f"Access denied: Field Officer {employee_oid} belongs to another branch", code="FORBIDDEN_BRANCH", status_code=403)
 
         # 1. Fetch All Punch In / Out Time Logs for this Officer on target_date
@@ -598,14 +618,21 @@ class TrackingService:
         employee_oid: Optional[int] = None,
         date_str: Optional[str] = None,
         period: str = "weekly",
-        user_branch_oid: Optional[int] = None
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        user_branch_oids: Optional[List[int]] = None,
     ) -> PlannedVsActualResponse:
         """Construct Planned vs Actual Site Visits comparison response."""
         target_date = datetime.strptime(date_str, "%Y-%m-%d").date() if date_str else date.today()
 
         if employee_oid is None:
-            # If no employee specified, return total aggregation across active officers scoped by user_branch_oid
-            officers = TrackingRepository.get_active_field_officers(db, user_branch_oid=user_branch_oid)
+            # If no employee specified, return total aggregation across active officers scoped by area_manager_oid / user_branch_oid
+            kwargs = {}
+            if area_manager_oid is not None:
+                kwargs["area_manager_oid"] = area_manager_oid
+            if user_branch_oids is not None:
+                kwargs["user_branch_oids"] = user_branch_oids
+            officers = TrackingRepository.get_active_field_officers(db, user_branch_oid=user_branch_oid, **kwargs)
             total_p = 0
             total_a = 0
             site_map: Dict[int, Dict[str, Any]] = {}
@@ -672,12 +699,22 @@ class TrackingService:
                 sites=site_items
             )
 
-        # Single Officer Specific comparison with branch authorization check
+        # Single Officer Specific comparison with hierarchy / branch authorization check
         employee = db.query(Employee).filter(Employee.oid == employee_oid).first()
         if not employee:
             raise AppBaseException(f"Field Officer with ID {employee_oid} not found", code="OFFICER_NOT_FOUND", status_code=404)
 
-        if user_branch_oid is not None and employee.BRANCH != user_branch_oid:
+        if user_branch_oids is not None:
+            is_allowed = (
+                (area_manager_oid is not None and employee.AREA_MANAGER_OID == area_manager_oid)
+                or (employee.BRANCH in user_branch_oids and (employee.AREA_MANAGER_OID is None or employee.AREA_MANAGER_OID == area_manager_oid))
+            )
+            if not is_allowed:
+                raise AppBaseException(f"Access denied: Field Officer {employee_oid} belongs to an unassigned branch", code="FORBIDDEN_BRANCH", status_code=403)
+        elif area_manager_oid is not None:
+            if employee.AREA_MANAGER_OID != area_manager_oid:
+                raise AppBaseException(f"Access denied: Field Officer {employee_oid} is not assigned to this area manager", code="FORBIDDEN_OFFICER", status_code=403)
+        elif user_branch_oid is not None and employee.BRANCH != user_branch_oid:
             raise AppBaseException(f"Access denied: Field Officer {employee_oid} belongs to another branch", code="FORBIDDEN_BRANCH", status_code=403)
 
         plan = TrackingRepository.get_active_plan_for_officer(db, employee_oid, target_date)

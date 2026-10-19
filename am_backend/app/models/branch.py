@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, String, SmallInteger
+from sqlalchemy import Column, BigInteger, String
 from app.database.database import Base
 
 class Branch(Base):
@@ -9,4 +9,3 @@ class Branch(Base):
     name = Column(String(50), nullable=False)
     short_name = Column(String(10), nullable=True)
     address = Column(String(100), nullable=True)
-    email_access = Column(SmallInteger, default=0, nullable=False)

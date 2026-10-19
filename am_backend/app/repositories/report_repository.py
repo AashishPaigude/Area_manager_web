@@ -2,6 +2,7 @@ from datetime import date, datetime, time
 from typing import Any, Dict, List, Optional, Union
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+from app.models.employee import Employee
 from app.models.visit_report_metadata import VisitReportMetadata
 
 
@@ -15,19 +16,44 @@ class ReportRepository:
         self.db = db
 
     @staticmethod
-    def get_officers(db: Session, user_branch_oid: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_officers(
+        db: Session,
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        user_branch_oids: Optional[List[int]] = None,
+    ) -> List[Dict[str, Any]]:
         """1. Get available officers for the Area Manager Reports page officer selector.
 
-        Query the uppercase EMPLOYEE table as the authoritative employee source, optionally scoped by user_branch_oid.
+        Query the uppercase EMPLOYEE table as the authoritative employee source, optionally scoped by area_manager_oid or user_branch_oid.
         """
-        branch_clause = " WHERE BRANCH = :user_branch_oid" if user_branch_oid is not None else ""
+        if user_branch_oids is not None and len(user_branch_oids) == 0:
+            return []
+
+        conditions = ["active = 1", "DESIGNATION = 19"]
+        params: Dict[str, Any] = {}
+
+        if user_branch_oids:
+            b_list = ",".join(str(int(b)) for b in user_branch_oids)
+            if area_manager_oid is not None:
+                conditions.append(f"(BRANCH IN ({b_list}) AND (AREA_MANAGER_OID IS NULL OR AREA_MANAGER_OID = :area_manager_oid))")
+                params["area_manager_oid"] = area_manager_oid
+            else:
+                conditions.append(f"BRANCH IN ({b_list})")
+        elif area_manager_oid is not None:
+            conditions.append("AREA_MANAGER_OID = :area_manager_oid")
+            params["area_manager_oid"] = area_manager_oid
+        elif user_branch_oid is not None:
+            conditions.append("BRANCH = :user_branch_oid")
+            params["user_branch_oid"] = user_branch_oid
+
+        where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+
         query = text(f"""
             SELECT oid AS employee_oid, name AS officer, emp_code, COMPANY AS company_id
             FROM EMPLOYEE
-            {branch_clause}
+            {where_clause}
             ORDER BY name ASC
         """)
-        params = {"user_branch_oid": user_branch_oid} if user_branch_oid is not None else {}
         result = db.execute(query, params)
         return [dict(row) for row in result.mappings()]
 
@@ -93,12 +119,34 @@ class ReportRepository:
             return f"{hrs} hr {mins} min"
 
     @staticmethod
-    def get_officers_with_reports(db: Session, user_branch_oid: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_officers_with_reports(
+        db: Session,
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        user_branch_oids: Optional[List[int]] = None,
+    ) -> List[Dict[str, Any]]:
         """Get distinct officer daily activity rows grouped by (employee_oid, visit_date).
 
-        Performs fast 24-hour daily clubbing for all submitted visit reports, optionally scoped by user_branch_oid.
+        Performs fast 24-hour daily clubbing for all submitted visit reports, optionally scoped by area_manager_oid or user_branch_oid.
         """
-        branch_clause = " WHERE e.BRANCH = :user_branch_oid" if user_branch_oid is not None else ""
+        if user_branch_oids:
+            b_list = ",".join(str(int(b)) for b in user_branch_oids)
+            if area_manager_oid is not None:
+                scope_clause = f" WHERE (e.BRANCH IN ({b_list}) AND (e.AREA_MANAGER_OID IS NULL OR e.AREA_MANAGER_OID = :area_manager_oid))"
+                params = {"area_manager_oid": area_manager_oid}
+            else:
+                scope_clause = f" WHERE e.BRANCH IN ({b_list})"
+                params = {}
+        elif area_manager_oid is not None:
+            scope_clause = " WHERE e.AREA_MANAGER_OID = :area_manager_oid"
+            params = {"area_manager_oid": area_manager_oid}
+        elif user_branch_oid is not None:
+            scope_clause = " WHERE e.BRANCH = :user_branch_oid"
+            params = {"user_branch_oid": user_branch_oid}
+        else:
+            scope_clause = ""
+            params = {}
+
         query = text(f"""
             SELECT 
                 e.oid AS employee_oid,
@@ -128,11 +176,10 @@ class ReportRepository:
             LEFT JOIN ATTENDANCE_TIME_LOG atl ON atl.ATTENDANCE_CELL = ac.oid
             LEFT JOIN EMPLOYEE_ATTENDANCE ea ON ea.EMPLOYEE = e.oid AND ea.duty_date = v.visit_date
             LEFT JOIN EMPLOYEE_CURRENT_LOCATION e_loc ON e_loc.OID = e.oid
-            {branch_clause}
+            {scope_clause}
             GROUP BY e.oid, e.name, e.emp_code, e.COMPANY, v.visit_date, e_loc.last_updated_on
             ORDER BY v.visit_date DESC, e.name ASC
         """)
-        params = {"user_branch_oid": user_branch_oid} if user_branch_oid is not None else {}
         result = db.execute(query, params)
         rows = [dict(row) for row in result.mappings()]
 
@@ -146,6 +193,8 @@ class ReportRepository:
         night_oids = [m["report_oid"] for m in all_meta if str(m["report_type"]).upper().strip() == "NIGHT"]
 
         gen_map: Dict[Any, List[Any]] = {}
+        sites_by_officer: Dict[Any, List[str]] = {}
+
         if gen_oids:
             g_rows = db.execute(
                 text("SELECT * FROM FIELD_OFFICER_GENERAL_VISIT_REPORTS WHERE oid IN :oids"),
@@ -156,6 +205,9 @@ class ReportRepository:
                 c_in = g.get("check-in_time") or g.get("check_in_time") or g.get("start_time")
                 c_out = g.get("check-out_time") or g.get("check_out_time") or g.get("end_time")
                 gen_map.setdefault(key, []).append((c_in, c_out))
+                s_name = (g.get("site_name") or g.get("unit") or "").strip()
+                if s_name and s_name not in sites_by_officer.setdefault(key, []):
+                    sites_by_officer[key].append(s_name)
 
         day_map: Dict[Any, List[Any]] = {}
         if day_oids:
@@ -168,6 +220,9 @@ class ReportRepository:
                 c_in = d.get("check-in_time") or d.get("check_in_time") or d.get("start_time")
                 c_out = d.get("check-out_time") or d.get("check_out_time") or d.get("end_time")
                 day_map.setdefault(key, []).append((c_in, c_out))
+                s_name = (d.get("site_name") or d.get("unit") or "").strip()
+                if s_name and s_name not in sites_by_officer.setdefault(key, []):
+                    sites_by_officer[key].append(s_name)
 
         night_map: Dict[Any, List[Any]] = {}
         if night_oids:
@@ -180,9 +235,11 @@ class ReportRepository:
                 c_in = n.get("check-in_time") or n.get("check_in_time") or n.get("start_time")
                 c_out = n.get("check-out_time") or n.get("check_out_time") or n.get("end_time")
                 night_map.setdefault(key, []).append((c_in, c_out))
+                s_name = (n.get("site_name") or n.get("unit") or "").strip()
+                if s_name and s_name not in sites_by_officer.setdefault(key, []):
+                    sites_by_officer[key].append(s_name)
 
-        # Batch pre-fetch site names per (employee_oid, visit_date)
-        sites_by_officer: Dict[Any, List[str]] = {}
+        # Batch pre-fetch site names from SITE table per (employee_oid, visit_date)
         site_query_rows = db.execute(
             text("""
                 SELECT DISTINCT v.employee_oid, v.visit_date, s.name AS site_name
@@ -193,8 +250,9 @@ class ReportRepository:
         ).mappings().all()
         for sr in site_query_rows:
             key = (sr["employee_oid"], sr["visit_date"])
-            if sr["site_name"] not in sites_by_officer.setdefault(key, []):
-                sites_by_officer[key].append(sr["site_name"])
+            s_name = (sr["site_name"] or "").strip()
+            if s_name and s_name not in sites_by_officer.setdefault(key, []):
+                sites_by_officer[key].append(s_name)
 
         now_dt = datetime.now()
 
@@ -328,12 +386,12 @@ class ReportRepository:
         # 3. Fallback to report start_time/end_time on that date if attendance logs are empty
         if not p_in_raw or not p_out_raw:
             time_query = text("""
-                SELECT check_in_time, check_out_time, start_time, end_time FROM (
-                    SELECT NULL as check_in_time, NULL as check_out_time, start_time, end_time FROM FIELD_OFFICER_GENERAL_VISIT_REPORTS WHERE employee_oid = :emp_oid AND visit_date = :target_date
+                SELECT check_in_time, check_out_time FROM (
+                    SELECT `check-in_time` as check_in_time, `check-out_time` as check_out_time FROM FIELD_OFFICER_GENERAL_VISIT_REPORTS WHERE employee_oid = :emp_oid AND visit_date = :target_date
                     UNION ALL
-                    SELECT start_time as check_in_time, end_time as check_out_time, start_time, end_time FROM FIELD_OFFICER_DAY_VISIT_REPORTS WHERE employee_oid = :emp_oid AND visit_date = :target_date
+                    SELECT `check-in_time` as check_in_time, `check-out_time` as check_out_time FROM FIELD_OFFICER_DAY_VISIT_REPORTS WHERE employee_oid = :emp_oid AND visit_date = :target_date
                     UNION ALL
-                    SELECT start_time as check_in_time, end_time as check_out_time, start_time, end_time FROM FIELD_OFFICER_NIGHT_VISIT_REPORTS WHERE employee_oid = :emp_oid AND visit_date = :target_date
+                    SELECT `check-in_time` as check_in_time, `check-out_time` as check_out_time FROM FIELD_OFFICER_NIGHT_VISIT_REPORTS WHERE employee_oid = :emp_oid AND visit_date = :target_date
                 ) t
             """)
             t_rows = db.execute(time_query, {"emp_oid": employee_oid, "target_date": target_date_str}).mappings().all()

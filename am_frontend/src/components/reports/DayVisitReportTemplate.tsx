@@ -31,12 +31,12 @@ interface DayVisitReportTemplateProps {
 export function DayVisitReportTemplate({ report, hideTitle = false, hideLogo = false, hideHeader = false }: DayVisitReportTemplateProps) {
   const clientName = report?.clientName || "N/A";
   const unit = report?.unit || "N/A";
-  const visitDate = report?.visitDate || report?.createdOn || "14 Jul 2026";
+  const visitDate = report?.visitDate || report?.createdOn || "N/A";
   const photosList = Array.isArray(report?.photos) ? report.photos : [];
   const photoCount = photosList.length;
 
   const formatDateToDMY = (dateStr: string) => {
-    if (!dateStr) return "14/07/26";
+    if (!dateStr || dateStr === "N/A") return "N/A";
     try {
       const d = new Date(dateStr);
       if (isNaN(d.getTime())) return dateStr.replace(/-/g, "/");

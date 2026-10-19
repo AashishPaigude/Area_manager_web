@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Wifi, WifiOff, Navigation, Clock, Signal,
   MapPin, Activity, Users, Search, RefreshCw, AlertTriangle,
@@ -15,6 +15,7 @@ import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { trackingService, LiveOfficerItem } from "@/services/trackingService";
+import { getSites, SiteItem, getBranches, Branch } from "@/services/visitService";
 
 const trackColors: Record<string, { dot: string; badge: string; ring: string }> = {
   online:  { dot: "#22c55e", badge: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400", ring: "ring-emerald-500/40" },
@@ -186,6 +187,9 @@ function BatteryBar({ level }: { level?: number | null }) {
 
 export default function LiveTracking() {
   const [officers, setOfficers] = useState<LiveOfficerItem[]>([]);
+  const [masterSites, setMasterSites] = useState<SiteItem[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selectedBranch, setSelectedBranch] = useState<string>("all");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [panTrigger, setPanTrigger] = useState<number>(0);
   const [filterStatus, setFilterStatus] = useState("all");
@@ -198,11 +202,23 @@ export default function LiveTracking() {
 
   const markerRefs = React.useRef<Record<number, L.Marker | null>>({});
 
+  // Fetch master sites and branches once on mount
+  useEffect(() => {
+    getSites()
+      .then((sites) => setMasterSites(sites || []))
+      .catch((err) => console.error("Failed to load master sites for LiveTracking:", err));
+
+    getBranches()
+      .then((bList) => setBranches(bList || []))
+      .catch((err) => console.error("Failed to load branches for LiveTracking:", err));
+  }, []);
+
   const fetchLiveTracking = useCallback(async (isInitial = false) => {
     try {
       if (isInitial) setLoading(true);
       setError(null);
-      const res = await trackingService.getLiveTracking();
+      const bOid = selectedBranch !== "all" ? parseInt(selectedBranch) : undefined;
+      const res = await trackingService.getLiveTracking(bOid);
       setOfficers(res.officers);
       setLastFetchTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
 
@@ -221,7 +237,7 @@ export default function LiveTracking() {
     } finally {
       if (isInitial) setLoading(false);
     }
-  }, []);
+  }, [selectedBranch]);
 
   // Fetch only on mount or when user clicks Refresh Data (no annoying auto-polling/jumping)
   useEffect(() => {
@@ -261,9 +277,39 @@ export default function LiveTracking() {
 
   const selected = selectedId ? (officers.find(o => o.id === selectedId) ?? null) : null;
 
+  // Combine master sites from database and active officer sites
+  const uniqueSites = useMemo(() => {
+    const siteMap = new Map<string, { id: string; name: string }>();
+
+    masterSites.forEach((s) => {
+      if (s.name && s.name.trim()) {
+        siteMap.set(String(s.oid), { id: String(s.oid), name: s.name.trim() });
+      }
+    });
+
+    officers.forEach((o) => {
+      if (o.site && o.site !== "—" && o.site.trim()) {
+        const key = o.siteId ? String(o.siteId) : o.site.trim();
+        if (!siteMap.has(key)) {
+          siteMap.set(key, { id: key, name: o.site.trim() });
+        }
+      }
+    });
+
+    return Array.from(siteMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [masterSites, officers]);
+
   const filtered = officers.filter(o => {
     const matchStatus = filterStatus === "all" || o.trackStatus === filterStatus;
-    const matchSite = siteFilter === "all-sites" || String(o.siteId) === siteFilter || o.site === siteFilter;
+    
+    let matchSite = siteFilter === "all-sites";
+    if (!matchSite) {
+      const selectedSiteObj = uniqueSites.find(s => s.id === siteFilter);
+      const selectedSiteName = selectedSiteObj ? selectedSiteObj.name.toLowerCase().trim() : siteFilter.toLowerCase().trim();
+      matchSite = String(o.siteId) === siteFilter ||
+        (Boolean(o.site) && o.site.toLowerCase().trim() === selectedSiteName);
+    }
+
     const matchSearch = o.name.toLowerCase().includes(search.toLowerCase()) ||
                         o.empCode.toLowerCase().includes(search.toLowerCase());
     return matchStatus && matchSite && matchSearch;
@@ -272,14 +318,6 @@ export default function LiveTracking() {
   // Only officers who are currently on duty and have valid coordinates appear on the map
   const officersWithLocation = filtered.filter(
     o => o.trackStatus !== "offline" && o.status === "on_duty" && o.lat !== null && o.lng !== null && !isNaN(o.lat as number) && !isNaN(o.lng as number)
-  );
-
-  const uniqueSites = Array.from(
-    new Map(
-      officers
-        .filter(o => o.site && o.site !== "—")
-        .map(o => [o.siteId ? String(o.siteId) : o.site, { id: o.siteId ? String(o.siteId) : o.site, name: o.site }])
-    ).values()
   );
 
   const counts = {
@@ -345,6 +383,19 @@ export default function LiveTracking() {
             className="pl-8 h-7 w-44 text-xs bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 shadow-sm"
           />
         </div>
+        {branches.length > 1 && (
+          <Select value={selectedBranch} onValueChange={setSelectedBranch}>
+            <SelectTrigger className="h-7 w-36 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+              <SelectValue placeholder="All Branches" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Branches</SelectItem>
+              {branches.map(b => (
+                <SelectItem key={b.oid} value={b.oid.toString()}>{b.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <Select value={filterStatus} onValueChange={setFilterStatus}>
           <SelectTrigger className="h-7 w-28 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
             <SelectValue placeholder="Status" />

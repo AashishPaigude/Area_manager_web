@@ -14,19 +14,10 @@ import Attendance from "./pages/Attendance";
 import Analytics from "./pages/Analytics";
 import PlanVisits from "./pages/PlanVisits";
 import PlannedVisits from "./pages/PlannedVisits";
-import ReportEmailAccess from "./pages/ReportEmailAccess";
 import FieldOfficerCombinedReport from "./pages/FieldOfficerCombinedReport";
-import { getStoredUserIdentity, ROLE_ADMIN } from "@/lib/auth";
+import { getStoredUserIdentity } from "@/lib/auth";
 
 const queryClient = new QueryClient();
-
-const AdminRouteGuard = ({ children }: { children: React.ReactNode }) => {
-  const user = getStoredUserIdentity();
-  if (user?.app_role !== ROLE_ADMIN) {
-    return <Navigate to="/dashboard" replace />;
-  }
-  return <>{children}</>;
-};
 
 const ProtectedRouteGuard = ({ children }: { children: React.ReactNode }) => {
   const user = getStoredUserIdentity();
@@ -53,6 +44,7 @@ const App = () => (
                     <Route path="/" element={<Navigate to="/dashboard" replace />} />
                     <Route path="/dashboard" element={<Dashboard />} />
                     <Route path="/live-tracking" element={<LiveTracking />} />
+                    <Route path="/reports" element={<Reports />} />
                     <Route path="/visits" element={<Reports />} />
                     <Route path="/reports/combined/:officerId" element={<FieldOfficerCombinedReport />} />
                     <Route path="/routes" element={<RouteHistory />} />
@@ -61,14 +53,6 @@ const App = () => (
                     <Route path="/analytics" element={<Analytics />} />
                     <Route path="/visit-planning/plan" element={<PlanVisits />} />
                     <Route path="/visit-planning/planned" element={<PlannedVisits />} />
-                    <Route
-                      path="/email-access"
-                      element={
-                        <AdminRouteGuard>
-                          <ReportEmailAccess />
-                        </AdminRouteGuard>
-                      }
-                    />
                     <Route path="*" element={<Navigate to="/dashboard" replace />} />
                   </Routes>
                 </AppLayout>

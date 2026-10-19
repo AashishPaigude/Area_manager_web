@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Any, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -36,6 +37,8 @@ class ReportExecutiveSummary(BaseModel):
     day_reports: int = 0
     night_reports: int = 0
     total_sites_covered: int = 0
+    planned_completed: Optional[int] = 0
+    unplanned_completed: Optional[int] = 0
 
 
 class SiteVisitSummary(BaseModel):
@@ -51,6 +54,8 @@ class SiteVisitSummary(BaseModel):
     check_out: Optional[str] = None
     status: Optional[str] = None
     visit_date: Optional[str] = None
+    is_planned: Optional[bool] = False
+    plan_code: Optional[str] = None
 
 
 class GeneralReportResponse(BaseModel):
@@ -71,6 +76,8 @@ class GeneralReportResponse(BaseModel):
     reason_of_visit: Optional[str] = None
     remark: Optional[str] = None
     photos: List[str] = Field(default_factory=list)
+    is_planned: Optional[bool] = False
+    plan_code: Optional[str] = None
 
 
 class DayReportResponse(BaseModel):
@@ -99,6 +106,8 @@ class DayReportResponse(BaseModel):
     lecture_details: Optional[Any] = None
     random_checking: Optional[Any] = None
     overall_remarks: Optional[str] = None
+    is_planned: Optional[bool] = False
+    plan_code: Optional[str] = None
 
 
 class NightReportResponse(BaseModel):
@@ -127,6 +136,26 @@ class NightReportResponse(BaseModel):
     status: Optional[str] = None
     overall_remarks: Optional[str] = None
     officer_signature: Optional[str] = None
+    is_planned: Optional[bool] = False
+    plan_code: Optional[str] = None
+
+
+class PlanInfoSummary(BaseModel):
+    """Plan information summary attached to combined report."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    plan_oid: int
+    plan_code: str
+    planning_type: str
+    week_start_date: Optional[date] = None
+    week_end_date: Optional[date] = None
+    planning_month: Optional[int] = None
+    planning_year: Optional[int] = None
+    status: Optional[str] = None
+    total_sites: Optional[int] = 0
+    total_planned_visits: Optional[int] = 0
+    visits_done: Optional[int] = 0
 
 
 class CombinedReportResponse(BaseModel):
@@ -145,6 +174,7 @@ class CombinedReportResponse(BaseModel):
     company_short_name: Optional[str] = None
     company_logo_url: Optional[str] = None
     is_eagle: Optional[bool] = False
+    plan_info: Optional[PlanInfoSummary] = None
 
 
 class OfficerListItem(BaseModel):

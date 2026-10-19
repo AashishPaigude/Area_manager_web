@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Optional
+from typing import Optional, List
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 import logging
@@ -25,9 +25,11 @@ class AttendanceService:
         status_param: Optional[str] = "ALL",
         start_date_str: Optional[str] = None,
         end_date_str: Optional[str] = None,
-        user_branch_oid: Optional[int] = None
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        user_branch_oids: Optional[List[int]] = None,
     ) -> AttendanceListResponse:
-        """Fetch and format Field Officer attendance list, scoped by user_branch_oid.
+        """Fetch and format Field Officer attendance list, scoped by area_manager_oid / user_branch_oid.
 
         Args:
             db: Database session.
@@ -36,6 +38,8 @@ class AttendanceService:
             start_date_str: Start date for date range query.
             end_date_str: End date for date range query.
             user_branch_oid: Optional branch OID for user authorization scoping.
+            area_manager_oid: Optional Area Manager OID for hierarchy scoping.
+            user_branch_oids: Optional list of branch OIDs for multi-branch scoping.
 
         Returns:
             AttendanceListResponse object.
@@ -78,7 +82,9 @@ class AttendanceService:
             status_filter=filter_status,
             start_date=parsed_start,
             end_date=parsed_end,
-            user_branch_oid=user_branch_oid
+            user_branch_oid=user_branch_oid,
+            area_manager_oid=area_manager_oid,
+            user_branch_oids=user_branch_oids,
         )
 
         summary_data = raw_result.get("summary", {})
@@ -118,9 +124,10 @@ class AttendanceService:
         db: Session,
         employee_oid: int,
         date_str: Optional[str] = None,
-        user_branch_oid: Optional[int] = None
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None
     ) -> AttendanceListResponse:
-        """Fetch attendance records for a specific employee OID, enforcing branch authorization checks."""
+        """Fetch attendance records for a specific employee OID, enforcing hierarchy/branch authorization checks."""
         from app.models.employee import Employee
         employee = db.query(Employee).filter(Employee.oid == employee_oid).first()
         if not employee:
@@ -129,14 +136,23 @@ class AttendanceService:
                 detail=f"Employee with OID {employee_oid} not found"
             )
 
-        if user_branch_oid is not None and employee.BRANCH != user_branch_oid:
+        if area_manager_oid is not None:
+            if employee.AREA_MANAGER_OID != area_manager_oid:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Access denied: Employee {employee_oid} is not assigned to this area manager"
+                )
+        elif user_branch_oid is not None and employee.BRANCH != user_branch_oid:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access denied: Employee {employee_oid} belongs to another branch"
             )
 
         res = AttendanceService.get_attendance(
-            db=db, date_str=date_str, user_branch_oid=user_branch_oid
+            db=db,
+            date_str=date_str,
+            user_branch_oid=user_branch_oid,
+            area_manager_oid=area_manager_oid
         )
         # Filter records for single employee
         filtered_records = [r for r in res.data.records if r.employee_oid == employee_oid]

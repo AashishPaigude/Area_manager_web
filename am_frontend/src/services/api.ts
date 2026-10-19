@@ -6,7 +6,7 @@ const getBaseUrl = (): string => {
   }
   const hostname = window.location.hostname;
   const host = (hostname === 'localhost' || !hostname) ? '127.0.0.1' : hostname;
-  return `http://${host}:8000`;
+  return `http://${host}:8005`;
 };
 
 // Create an Axios instance pointing to your FastAPI backend

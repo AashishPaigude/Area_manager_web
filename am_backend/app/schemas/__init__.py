@@ -9,6 +9,7 @@ from app.schemas.reports import (
     NightReportResponse,
     CombinedReportResponse,
     OfficerListItem,
+    PlanInfoSummary,
 )
 
 __all__ = [
@@ -25,5 +26,6 @@ __all__ = [
     "NightReportResponse",
     "CombinedReportResponse",
     "OfficerListItem",
+    "PlanInfoSummary",
 ]
 

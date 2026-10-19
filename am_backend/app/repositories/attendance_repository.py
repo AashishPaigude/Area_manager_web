@@ -4,6 +4,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 import logging
 
+from app.models.employee import Employee
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,9 +30,11 @@ class AttendanceRepository:
         status_filter: str = "ALL",
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
-        user_branch_oid: Optional[int] = None
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        user_branch_oids: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
-        """Fetch Field Officer attendance list and summary counts for target_date or a date range [start_date, end_date], optionally scoped by user_branch_oid."""
+        """Fetch Field Officer attendance list and summary counts for target_date or a date range [start_date, end_date], optionally scoped by area_manager_oid or user_branch_oid."""
         status_filter_upper = (status_filter or "ALL").strip().upper()
 
         if start_date and end_date:
@@ -47,7 +51,18 @@ class AttendanceRepository:
         e_date_str = e_date.strftime("%Y-%m-%d")
         is_range = (s_date != e_date)
 
-        branch_clause = " AND e.BRANCH = :user_branch_oid" if user_branch_oid is not None else ""
+        if user_branch_oids:
+            b_list = ",".join(str(int(b)) for b in user_branch_oids)
+            if area_manager_oid is not None:
+                scope_clause = f" AND (e.BRANCH IN ({b_list}) AND (e.AREA_MANAGER_OID IS NULL OR e.AREA_MANAGER_OID = :area_manager_oid))"
+            else:
+                scope_clause = f" AND e.BRANCH IN ({b_list})"
+        elif area_manager_oid is not None:
+            scope_clause = " AND e.AREA_MANAGER_OID = :area_manager_oid"
+        elif user_branch_oid is not None:
+            scope_clause = " AND e.BRANCH = :user_branch_oid"
+        else:
+            scope_clause = ""
 
         if is_range:
             query = text(f"""
@@ -72,7 +87,7 @@ class AttendanceRepository:
                   AND (d.oid = 19 
                        OR UPPER(d.name_full) = 'FIELD OFFICER' 
                        OR UPPER(d.name) LIKE '%FIELD%OFFICER%')
-                  {branch_clause}
+                  {scope_clause}
                 GROUP BY e.oid, e.name, e.emp_code, ac.attendance_date
                 ORDER BY ac.attendance_date DESC, e.name ASC
             """)
@@ -97,13 +112,15 @@ class AttendanceRepository:
                   AND (d.oid = 19 
                        OR UPPER(d.name_full) = 'FIELD OFFICER' 
                        OR UPPER(d.name) LIKE '%FIELD%OFFICER%')
-                  {branch_clause}
+                  {scope_clause}
                 GROUP BY e.oid, e.name, e.emp_code
                 ORDER BY e.name ASC
             """)
             params = {"target_date": s_date_str}
 
-        if user_branch_oid is not None:
+        if area_manager_oid is not None:
+            params["area_manager_oid"] = area_manager_oid
+        elif user_branch_oid is not None:
             params["user_branch_oid"] = user_branch_oid
 
         rows = db.execute(query, params).mappings().all()

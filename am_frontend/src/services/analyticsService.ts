@@ -129,9 +129,13 @@ export interface OfficerAnalyticsDropdownItem {
 }
 
 export const analyticsService = {
-  getOfficers: async (): Promise<OfficerAnalyticsDropdownItem[]> => {
+  getOfficers: async (branchOid?: number | null): Promise<OfficerAnalyticsDropdownItem[]> => {
     try {
-      const response = await api.get<OfficerAnalyticsDropdownItem[]>('/api/v1/analytics/officers');
+      const params: Record<string, any> = {};
+      if (branchOid !== undefined && branchOid !== null) {
+        params.branch_oid = branchOid;
+      }
+      const response = await api.get<OfficerAnalyticsDropdownItem[]>('/api/v1/analytics/officers', { params });
       return response.data;
     } catch (error: any) {
       console.warn('Analytics officers API error:', error);
@@ -144,6 +148,7 @@ export const analyticsService = {
     from_date?: string | null;
     to_date?: string | null;
     period?: string;
+    branch_oid?: number | null;
   }): Promise<AnalyticsSummaryResponse> => {
     const queryParams: Record<string, any> = {};
     if (params.employee_oid !== undefined && params.employee_oid !== null) {
@@ -152,6 +157,9 @@ export const analyticsService = {
     if (params.from_date) queryParams.from_date = params.from_date;
     if (params.to_date) queryParams.to_date = params.to_date;
     if (params.period) queryParams.period = params.period;
+    if (params.branch_oid !== undefined && params.branch_oid !== null) {
+      queryParams.branch_oid = params.branch_oid;
+    }
 
     const response = await api.get<AnalyticsSummaryResponse>('/api/v1/analytics/summary', {
       params: queryParams,

@@ -28,14 +28,17 @@ class DashboardService:
         force_refresh: bool = False,
         period: str = "weekly",
         branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        branch_oids: Optional[List[int]] = None,
     ) -> DashboardResponse:
         """Fetch consolidated Dashboard data and format into DashboardResponse Pydantic model.
 
-        Supports a 30-minute cache TTL per date, period, and branch scope.
+        Supports a 30-minute cache TTL per date, period, and branch / AM scope.
         """
         period_clean = (period or "weekly").strip().lower()
-        branch_key = str(branch_oid) if branch_oid is not None else "all"
-        date_key = f"{(target_date or date.today()).isoformat()}_{period_clean}_b{branch_key}"
+        branch_key = str(branch_oid) if branch_oid is not None else ("_".join(map(str, sorted(branch_oids))) if branch_oids else "all")
+        am_key = f"_am{area_manager_oid}" if area_manager_oid is not None else ""
+        date_key = f"{(target_date or date.today()).isoformat()}_{period_clean}_b{branch_key}{am_key}"
         now = datetime.now()
 
         # Return cached response if valid and force_refresh is not requested
@@ -45,8 +48,15 @@ class DashboardService:
                 logger.info(f"Returning cached dashboard summary for {date_key}")
                 return cached_response
 
-        logger.info(f"Fetching fresh dashboard summary from DB for {date_key} (force_refresh={force_refresh}, period={period_clean}, branch_oid={branch_oid})")
-        raw_data = DashboardRepository.get_dashboard_data(db, target_date, period=period_clean, branch_oid=branch_oid)
+        logger.info(f"Fetching fresh dashboard summary from DB for {date_key} (force_refresh={force_refresh}, period={period_clean}, branch_oid={branch_oid}, am_oid={area_manager_oid}, branch_oids={branch_oids})")
+        kwargs = {}
+        if area_manager_oid is not None:
+            kwargs["area_manager_oid"] = area_manager_oid
+        if branch_oids is not None:
+            kwargs["branch_oids"] = branch_oids
+        raw_data = DashboardRepository.get_dashboard_data(
+            db, target_date, period=period_clean, branch_oid=branch_oid, **kwargs
+        )
 
         raw_summary = raw_data.get("summary", {})
         raw_officers = raw_data.get("officers", [])
@@ -61,6 +71,8 @@ class DashboardService:
             completedVisitsWeekly=raw_summary.get("completedVisitsWeekly", 0),
             plannedVisitsMonthly=raw_summary.get("plannedVisitsMonthly", 0),
             completedVisitsMonthly=raw_summary.get("completedVisitsMonthly", 0),
+            sitesCoveredWeekly=raw_summary.get("sitesCoveredWeekly", 0),
+            sitesCoveredMonthly=raw_summary.get("sitesCoveredMonthly", 0),
         )
 
         # 2. Format Officers list

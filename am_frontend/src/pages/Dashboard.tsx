@@ -1,19 +1,28 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
-  Users, CheckCircle2, Search, UserCheck, UserX, Calendar, ChevronRight, ChevronDown, RefreshCw, AlertCircle, Loader2
+  Users, CheckCircle2, Search, UserCheck, UserX, Calendar, ChevronRight, ChevronDown, RefreshCw, AlertCircle, Loader2,
+  ChevronLeft, ChevronsLeft, ChevronsRight
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue
+} from "@/components/ui/select";
 import {
   getDashboardData,
   DashboardResponse,
   DashboardOfficer,
   DashboardVisit
 } from "../services/dashboardService";
+import { getSites, SiteItem, getBranches, Branch } from "../services/visitService";
 
 export default function Dashboard() {
   const [dashboardData, setDashboardData] = useState<DashboardResponse | null>(null);
+  const [masterSites, setMasterSites] = useState<SiteItem[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selectedBranch, setSelectedBranch] = useState<string>("ALL");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -21,6 +30,20 @@ export default function Dashboard() {
   const [searchQuery, setSearchQuery] = useState("");
   const [siteFilter, setSiteFilter] = useState("all");
   const [kpiPeriod, setKpiPeriod] = useState<"weekly" | "monthly">("weekly");
+
+  // Fetch branches once on mount
+  useEffect(() => {
+    getBranches()
+      .then((b) => setBranches(b || []))
+      .catch((err) => console.error("Failed to load branches for Dashboard:", err));
+  }, []);
+
+  // Fetch master sites once on mount so all sites are available in the filter
+  useEffect(() => {
+    getSites()
+      .then((sites) => setMasterSites(sites || []))
+      .catch((err) => console.error("Failed to load master sites for Dashboard:", err));
+  }, []);
 
   // Fetch dashboard data from backend API
   const loadData = useCallback(async (isInitial = false, forceRefresh = false) => {
@@ -32,7 +55,8 @@ export default function Dashboard() {
     }
 
     try {
-      const data = await getDashboardData(undefined, forceRefresh);
+      const branchOid = selectedBranch !== "ALL" ? Number(selectedBranch) : undefined;
+      const data = await getDashboardData(undefined, forceRefresh, kpiPeriod, branchOid);
       setDashboardData(data);
       setError(null);
     } catch (err: any) {
@@ -44,7 +68,7 @@ export default function Dashboard() {
       setLoading(false);
       setIsRefreshing(false);
     }
-  }, []);
+  }, [kpiPeriod, selectedBranch]);
 
   const handlePeriodChange = (newPeriod: "weekly" | "monthly") => {
     setKpiPeriod(newPeriod);
@@ -74,18 +98,24 @@ export default function Dashboard() {
 
   const officers = dashboardData?.officers || [];
 
-  // Dynamically extract unique site names from real officer visit data
+  // Dynamically combine master sites and officer visit data so all sites are selectable
   const availableSites = useMemo(() => {
     const siteNames = new Set<string>();
+    masterSites.forEach((s) => {
+      if (s.name && s.name.trim()) {
+        siteNames.add(s.name.trim());
+      }
+    });
     officers.forEach((o) => {
       o.visits?.forEach((v) => {
-        if (v.site_name && v.site_name.trim()) {
-          siteNames.add(v.site_name.trim());
+        const sName = (v.site_name || v.site || "").trim();
+        if (sName) {
+          siteNames.add(sName);
         }
       });
     });
-    return Array.from(siteNames).sort();
-  }, [officers]);
+    return Array.from(siteNames).sort((a, b) => a.localeCompare(b));
+  }, [masterSites, officers]);
 
   const formatToDDMMYYYY = (val?: string | null) => {
     if (!val || val === "—") return "—";
@@ -99,17 +129,48 @@ export default function Dashboard() {
     return val;
   };
 
-
   const filteredOfficers = officers.filter((o) => {
-    const matchesQuery = searchQuery === "" ||
-      o.officer.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (o.emp_code && o.emp_code.toLowerCase().includes(searchQuery.toLowerCase()));
+    const q = searchQuery.trim().toLowerCase();
+    const matchesQuery = q === "" ||
+      o.officer.toLowerCase().includes(q) ||
+      (o.emp_code && o.emp_code.toLowerCase().includes(q));
     
     const matchesSite = siteFilter === "all" ||
-      o.visits.some(v => v.site_name === siteFilter);
+      o.visits.some(v => ((v.site_name || v.site) || "").toLowerCase().trim() === siteFilter.toLowerCase().trim());
       
     return matchesQuery && matchesSite;
   });
+
+  // Pagination State for Dashboard Officers Table
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(10);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, siteFilter]);
+
+  // Computed Pagination Values for Dashboard Officers
+  const totalOfficersCount = filteredOfficers.length;
+  const totalPages = Math.max(1, Math.ceil(totalOfficersCount / pageSize));
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+
+  const paginatedOfficers = useMemo(() => {
+    const start = (safeCurrentPage - 1) * pageSize;
+    return filteredOfficers.slice(start, start + pageSize);
+  }, [filteredOfficers, safeCurrentPage, pageSize]);
+
+  const getPaginationNumbers = (current: number, total: number): (number | string)[] => {
+    if (total <= 7) {
+      return Array.from({ length: total }, (_, i) => i + 1);
+    }
+    if (current <= 4) {
+      return [1, 2, 3, 4, 5, "...", total];
+    }
+    if (current >= total - 3) {
+      return [1, "...", total - 4, total - 3, total - 2, total - 1, total];
+    }
+    return [1, "...", current - 1, current, current + 1, "...", total];
+  };
 
   return (
     <div className="space-y-6">
@@ -121,8 +182,28 @@ export default function Dashboard() {
 
       {/* KPI Cards Section */}
       <div className="space-y-2.5">
-        <div className="flex items-center justify-end gap-3 px-0.5">
-          <span className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">Visits Target:</span>
+        <div className="flex flex-wrap items-center justify-between gap-3 px-0.5">
+          <div>
+            {branches.length > 1 && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">Branch:</span>
+                <select
+                  value={selectedBranch}
+                  onChange={(e) => setSelectedBranch(e.target.value)}
+                  className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-foreground text-xs h-8 px-3 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary shadow-sm min-w-[140px]"
+                >
+                  <option value="ALL">All Branches ({branches.length})</option>
+                  {branches.map((b) => (
+                    <option key={b.oid} value={String(b.oid)}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-3 ml-auto">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">Visits Target:</span>
           <div className="inline-flex items-center rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 p-1 text-xs font-medium shadow-sm">
             <button
               onClick={() => handlePeriodChange("weekly")}
@@ -145,6 +226,7 @@ export default function Dashboard() {
               Monthly
             </button>
           </div>
+        </div>
         </div>
 
         {/* KPI Cards — Single line grid */}
@@ -272,15 +354,31 @@ export default function Dashboard() {
                 placeholder="Search by officer name or code..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9 h-7 text-xs bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 shadow-sm"
+                className="pl-9 h-8 text-xs bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 shadow-sm"
               />
             </div>
+
+            {/* Branch Filter dropdown for multi-branch users */}
+            {branches.length > 1 && (
+              <select
+                value={selectedBranch}
+                onChange={(e) => setSelectedBranch(e.target.value)}
+                className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-foreground text-xs h-8 px-3 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary shadow-sm min-w-[150px] max-w-[200px]"
+              >
+                <option value="ALL">All Branches</option>
+                {branches.map((b) => (
+                  <option key={b.oid} value={String(b.oid)}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            )}
 
             {/* Site Filter dropdown */}
             <select
               value={siteFilter}
               onChange={(e) => setSiteFilter(e.target.value)}
-              className="bg-card border border-input text-foreground text-xs h-9 px-3 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary shadow-sm min-w-[180px] max-w-[240px]"
+              className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-foreground text-xs h-8 px-3 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary shadow-sm min-w-[180px] max-w-[260px]"
             >
               <option value="all">All Secure Sites</option>
               {availableSites.map((siteName) => (
@@ -316,30 +414,29 @@ export default function Dashboard() {
 
           {/* Desktop Table View — hidden on mobile */}
           {!loading && !error && (
-            <div className="hidden md:block overflow-y-auto" style={{ maxHeight: 420 }}>
-              <table className="w-full text-sm table-fixed">
+            <div className="hidden md:block">
+              <div className="overflow-y-auto" style={{ maxHeight: 420 }}>
+                <table className="w-full text-sm table-fixed">
                 <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur-sm">
                   <tr className="border-b text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
-                    <th className="px-4 py-3 text-left w-[30%]">Officer</th>
-                    <th className="px-4 py-3 text-center w-[16%] whitespace-nowrap">Date</th>
-                    <th className="px-4 py-3 text-center w-[14%] whitespace-nowrap">Visit Done</th>
-                    <th className="px-4 py-3 text-center w-[16%] whitespace-nowrap">Hrs Worked</th>
-                    <th className="px-4 py-3 text-center w-[18%] whitespace-nowrap">GPS Status</th>
+                    <th className="px-4 py-3 text-left w-[38%]">Officer</th>
+                    <th className="px-4 py-3 text-center w-[20%] whitespace-nowrap">Date</th>
+                    <th className="px-4 py-3 text-center w-[18%] whitespace-nowrap">Visit Done</th>
+                    <th className="px-4 py-3 text-center w-[18%] whitespace-nowrap">Hrs Worked</th>
                     <th className="px-4 py-3 text-center w-[6%]"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredOfficers.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="p-12 text-center text-muted-foreground text-sm">
+                      <td colSpan={5} className="p-12 text-center text-muted-foreground text-sm">
                         No field officers have submitted visit reports for today yet. Records will appear here automatically as visits are completed.
                       </td>
                     </tr>
                   ) : (
-                    filteredOfficers.map((o) => {
+                    paginatedOfficers.map((o) => {
                     const attDateRaw = o.visits.length > 0 && o.visits[0].visit_date ? o.visits[0].visit_date : (dashboardData?.target_date || "—");
                     const attDate = formatToDDMMYYYY(attDateRaw);
-                    const gpsStatus = o.gps_status || "—";
                     const isSelected = selectedOfficer === o.employee_oid;
 
                     return (
@@ -369,18 +466,6 @@ export default function Dashboard() {
                           {/* Hours */}
                           <td className="px-4 py-3 text-center font-mono-data text-xs font-medium">{o.hours_worked || "—"}</td>
 
-                          {/* Tracking badge */}
-                          <td className="px-4 py-3 text-center">
-                            <Badge className={`text-[10px] font-semibold border-0 capitalize
-                              ${gpsStatus === "online"  ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" :
-                                gpsStatus === "delayed" ? "bg-amber-500/15 text-amber-600 dark:text-amber-400" :
-                                gpsStatus === "offline" ? "bg-red-500/15 text-red-600 dark:text-red-400" :
-                                                          "bg-slate-400/15 text-slate-500"}`}
-                            >
-                              {gpsStatus === "delayed" ? "Connectivity Issue" : gpsStatus}
-                            </Badge>
-                          </td>
-
                           {/* Collapsible Indicator Chevron */}
                           <td className="px-4 py-3 text-center">
                             {isSelected ? (
@@ -394,7 +479,7 @@ export default function Dashboard() {
                         {/* Expandable Sub-Table for Submitted Visits */}
                         {isSelected && (
                           <tr className="bg-muted/10 border-b">
-                            <td colSpan={6} className="px-4 py-3">
+                            <td colSpan={5} className="px-4 py-3">
                               <div className="mx-1 border border-border/70 rounded-lg bg-card shadow-2xs overflow-hidden">
                                 <table className="w-full text-xs text-left">
                                   <thead>
@@ -438,9 +523,128 @@ export default function Dashboard() {
                         )}
                       </React.Fragment>
                     );
-                  }))}
+                  })
+                )}
                 </tbody>
               </table>
+            </div>
+
+            {/* Pagination Controls Footer */}
+            {filteredOfficers.length > 0 && (
+              <div className="border-t border-border/60 bg-card/60 px-4 py-3 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                {/* Left: Summary info & Page size selector */}
+                <div className="flex flex-wrap items-center gap-3 text-muted-foreground w-full sm:w-auto justify-between sm:justify-start">
+                  <span>
+                    Showing <span className="font-bold text-foreground font-mono-data">{(safeCurrentPage - 1) * pageSize + 1}</span> to{" "}
+                    <span className="font-bold text-foreground font-mono-data">{Math.min(safeCurrentPage * pageSize, totalOfficersCount)}</span> of{" "}
+                    <span className="font-bold text-primary font-mono-data">{totalOfficersCount}</span> officers
+                  </span>
+
+                  <div className="flex items-center gap-1.5 ml-0 sm:ml-2">
+                    <span className="text-[11px] text-muted-foreground">Per page:</span>
+                    <Select
+                      value={String(pageSize)}
+                      onValueChange={(val) => {
+                        setPageSize(Number(val));
+                        setCurrentPage(1);
+                      }}
+                    >
+                      <SelectTrigger className="h-7 w-[68px] text-xs bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 shadow-sm px-2">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="10">10</SelectItem>
+                        <SelectItem value="20">20</SelectItem>
+                        <SelectItem value="50">50</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                {/* Right: Page Indicator and Buttons */}
+                <div className="flex items-center gap-1.5 w-full sm:w-auto justify-between sm:justify-end">
+                  {/* Current page indicator pill */}
+                  <span className="text-xs font-medium text-muted-foreground px-2.5 py-1 bg-muted/60 rounded-md border border-border/40 whitespace-nowrap">
+                    Page <strong className="text-primary font-mono-data">{safeCurrentPage}</strong> of{" "}
+                    <strong className="text-foreground font-mono-data">{totalPages}</strong>
+                  </span>
+
+                  {/* Navigation Buttons */}
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-7 w-7 text-xs border-slate-300 dark:border-slate-700"
+                      disabled={safeCurrentPage === 1}
+                      onClick={() => setCurrentPage(1)}
+                      title="First Page"
+                    >
+                      <ChevronsLeft className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-7 w-7 text-xs border-slate-300 dark:border-slate-700"
+                      disabled={safeCurrentPage === 1}
+                      onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                      title="Previous Page"
+                    >
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                    </Button>
+
+                    {/* Page Numbers */}
+                    <div className="hidden md:flex items-center gap-1">
+                      {getPaginationNumbers(safeCurrentPage, totalPages).map((pNum, idx) => {
+                        if (pNum === "...") {
+                          return (
+                            <span key={`ellipsis-${idx}`} className="px-1 text-muted-foreground text-xs">
+                              ...
+                            </span>
+                          );
+                        }
+                        const isCurrent = pNum === safeCurrentPage;
+                        return (
+                          <Button
+                            key={`page-${pNum}`}
+                            variant={isCurrent ? "default" : "outline"}
+                            size="icon"
+                            className={`h-7 w-7 text-xs font-mono-data ${
+                              isCurrent
+                                ? "bg-primary text-primary-foreground font-bold shadow-xs"
+                                : "border-slate-300 dark:border-slate-700 hover:bg-muted/80"
+                            }`}
+                            onClick={() => setCurrentPage(Number(pNum))}
+                          >
+                            {pNum}
+                          </Button>
+                        );
+                      })}
+                    </div>
+
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-7 w-7 text-xs border-slate-300 dark:border-slate-700"
+                      disabled={safeCurrentPage === totalPages}
+                      onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                      title="Next Page"
+                    >
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-7 w-7 text-xs border-slate-300 dark:border-slate-700"
+                      disabled={safeCurrentPage === totalPages}
+                      onClick={() => setCurrentPage(totalPages)}
+                      title="Last Page"
+                    >
+                      <ChevronsRight className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
             </div>
           )}
 
@@ -452,9 +656,8 @@ export default function Dashboard() {
                   No field officers have submitted visit reports for today yet. Records will appear here automatically as visits are completed.
                 </div>
               ) : (
-                filteredOfficers.map((o) => {
+                paginatedOfficers.map((o) => {
                 const isSelected = selectedOfficer === o.employee_oid;
-                const gpsStatus = o.gps_status || "—";
 
                 return (
                   <div key={o.employee_oid} className="flex flex-col">
@@ -467,16 +670,6 @@ export default function Dashboard() {
                         <div>
                           <div className="font-semibold text-sm text-foreground">{o.officer}</div>
                           <div className="text-[10px] text-muted-foreground mt-0.5">{o.emp_code || `EMP${o.employee_oid}`}</div>
-                        </div>
-                        <div className="flex flex-col items-end gap-1.5 shrink-0">
-                          <Badge className={`text-[9px] font-bold border-0 capitalize
-                            ${gpsStatus === "online"  ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" :
-                              gpsStatus === "delayed" ? "bg-amber-500/15 text-amber-600 dark:text-amber-400" :
-                              gpsStatus === "offline" ? "bg-red-500/15 text-red-600 dark:text-red-400" :
-                                                        "bg-slate-400/15 text-slate-500"}`}
-                          >
-                            GPS: {gpsStatus === "delayed" ? "Connectivity Issue" : gpsStatus}
-                          </Badge>
                         </div>
                       </div>
 
@@ -543,7 +736,8 @@ export default function Dashboard() {
                     )}
                   </div>
                 );
-              }))}
+              })
+            )}
             </div>
           )}
         </CardContent>

@@ -15,6 +15,8 @@ class DashboardSummary(BaseModel):
     completedVisitsWeekly: int = 0
     plannedVisitsMonthly: int = 0
     completedVisitsMonthly: int = 0
+    sitesCoveredWeekly: int = 0
+    sitesCoveredMonthly: int = 0
 
 
 class DashboardVisit(BaseModel):

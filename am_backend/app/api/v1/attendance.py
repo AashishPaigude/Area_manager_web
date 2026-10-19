@@ -30,6 +30,10 @@ def get_attendance(
         None,
         description="End date for date range in YYYY-MM-DD format.",
     ),
+    branch_oid: Optional[int] = Query(
+        None,
+        description="Optional Branch OID filter.",
+    ),
     current_user: UserContext = Depends(get_current_user_context),
     db: Session = Depends(get_db),
 ) -> AttendanceListResponse:
@@ -37,12 +41,15 @@ def get_attendance(
 
     Supports optional filtering by attendance date, date ranges, and officer status (ALL, PRESENT, ABSENT).
     """
+    scoped_branches = current_user.resolve_scoped_branch_oids(branch_oid)
     return AttendanceService.get_attendance(
         db=db, 
         date_str=date, 
         status_param=status,
         start_date_str=start_date,
         end_date_str=end_date,
-        user_branch_oid=current_user.branch_oid
+        user_branch_oid=current_user.branch_oid,
+        area_manager_oid=current_user.area_manager_oid,
+        user_branch_oids=scoped_branches,
     )
 

@@ -2,6 +2,9 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Shield,
   ChevronRight,
+  ChevronLeft,
+  ChevronsLeft,
+  ChevronsRight,
   Search,
   CheckCircle2,
   XCircle,
@@ -19,6 +22,14 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   trackHistoryControlService,
   OfficerTrackHistoryItem,
@@ -34,6 +45,15 @@ export default function TrackHistoryControl() {
   const [searchTerm, setSearchTerm] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [branchFilter, setBranchFilter] = useState<string>("ALL");
+
+  // Pagination State
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(10);
+
+  // Reset to first page when search or filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter, branchFilter]);
 
   // Fetch officers from backend API
   const fetchOfficers = useCallback(async () => {
@@ -124,6 +144,29 @@ export default function TrackHistoryControl() {
       return matchesSearch && matchesFilter && matchesBranch;
     });
   }, [officers, searchTerm, statusFilter, branchFilter]);
+
+  // Computed Pagination Values
+  const totalItems = filteredOfficers.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+
+  const paginatedOfficers = useMemo(() => {
+    const start = (safeCurrentPage - 1) * pageSize;
+    return filteredOfficers.slice(start, start + pageSize);
+  }, [filteredOfficers, safeCurrentPage, pageSize]);
+
+  const getPaginationNumbers = (current: number, total: number): (number | string)[] => {
+    if (total <= 7) {
+      return Array.from({ length: total }, (_, i) => i + 1);
+    }
+    if (current <= 4) {
+      return [1, 2, 3, 4, 5, "...", total];
+    }
+    if (current >= total - 3) {
+      return [1, "...", total - 4, total - 3, total - 2, total - 1, total];
+    }
+    return [1, "...", current - 1, current, current + 1, "...", total];
+  };
 
   // Handle Toggle Switch with optimistic revert and specific error handling
   const handleToggle = async (officer: OfficerTrackHistoryItem, nextChecked: boolean) => {
@@ -328,7 +371,7 @@ export default function TrackHistoryControl() {
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 placeholder="Search officer name, employee code..."
-                className="pl-8 h-8 text-xs bg-background border-input shadow-2xs min-w-[220px] max-w-[320px]"
+                className="pl-8 h-8 text-xs bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 shadow-sm min-w-[220px] max-w-[320px]"
               />
             </div>
 
@@ -336,7 +379,7 @@ export default function TrackHistoryControl() {
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="bg-background border border-input text-foreground text-xs h-8 px-3 rounded-md focus:outline-none focus:ring-1 focus:ring-primary shadow-2xs min-w-[150px]"
+              className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-foreground text-xs h-8 px-3 rounded-md focus:outline-none focus:ring-1 focus:ring-primary shadow-sm min-w-[150px]"
             >
               <option value="ALL">All States</option>
               <option value="ENABLED">ENABLED (Collection Active)</option>
@@ -344,21 +387,23 @@ export default function TrackHistoryControl() {
             </select>
 
             {/* Branch Dropdown */}
-            <select
-              value={branchFilter}
-              onChange={(e) => setBranchFilter(e.target.value)}
-              className="bg-background border border-input text-foreground text-xs h-8 px-3 rounded-md focus:outline-none focus:ring-1 focus:ring-primary shadow-2xs min-w-[140px]"
-            >
-              <option value="ALL">All Branches</option>
-              {availableBranches.map((b) => (
-                <option key={b} value={b}>
-                  {b}
-                </option>
-              ))}
-            </select>
+            {availableBranches.length > 1 && (
+              <select
+                value={branchFilter}
+                onChange={(e) => setBranchFilter(e.target.value)}
+                className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-foreground text-xs h-8 px-3 rounded-md focus:outline-none focus:ring-1 focus:ring-primary shadow-sm min-w-[140px]"
+              >
+                <option value="ALL">All Branches</option>
+                {availableBranches.map((b) => (
+                  <option key={b} value={b}>
+                    {b}
+                  </option>
+                ))}
+              </select>
+            )}
 
             {/* Reset Filter Button */}
-            {(searchTerm || statusFilter !== "ALL" || branchFilter !== "ALL") && (
+            {(searchTerm || statusFilter !== "ALL" || (availableBranches.length > 1 && branchFilter !== "ALL")) && (
               <div className="flex items-center gap-3 text-xs ml-auto">
                 <span className="text-muted-foreground">
                   Showing <span className="font-bold text-primary">{filteredOfficers.length}</span> of {officers.length}
@@ -447,7 +492,7 @@ export default function TrackHistoryControl() {
                   </td>
                 </tr>
               ) : (
-                filteredOfficers.map((officer) => {
+                paginatedOfficers.map((officer) => {
                   const officerId = getOfficerId(officer);
                   const isEnabled = isOfficerEnabled(officer);
                   const isUpdating = updatingId === officerId;
@@ -491,7 +536,7 @@ export default function TrackHistoryControl() {
                         </div>
                       </td>
 
-                      {/* Combined Segmented Enable / Disable Control (ReportEmailAccess style) */}
+                      {/* Combined Segmented Enable / Disable Control */}
                       <td className="px-4 py-1.5 text-center">
                         <div className="flex flex-col items-center justify-center">
                           <div className="relative grid grid-cols-2 w-28 h-7 p-0.5 rounded-full border border-border bg-muted/60 overflow-hidden shrink-0">
@@ -574,7 +619,7 @@ export default function TrackHistoryControl() {
               No Field Officers match the selected filters.
             </div>
           ) : (
-            filteredOfficers.map((officer) => {
+            paginatedOfficers.map((officer) => {
               const officerId = getOfficerId(officer);
               const isEnabled = isOfficerEnabled(officer);
               const isUpdating = updatingId === officerId;
@@ -654,6 +699,124 @@ export default function TrackHistoryControl() {
             })
           )}
         </div>
+
+        {/* Pagination Controls Footer */}
+        {!loading && filteredOfficers.length > 0 && (
+          <div className="border-t border-border/60 bg-card/60 px-4 py-3 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+            {/* Left: Summary info & Page size selector */}
+            <div className="flex flex-wrap items-center gap-3 text-muted-foreground w-full sm:w-auto justify-between sm:justify-start">
+              <span>
+                Showing <span className="font-bold text-foreground font-mono-data">{(safeCurrentPage - 1) * pageSize + 1}</span> to{" "}
+                <span className="font-bold text-foreground font-mono-data">{Math.min(safeCurrentPage * pageSize, totalItems)}</span> of{" "}
+                <span className="font-bold text-primary font-mono-data">{totalItems}</span> officers
+              </span>
+
+              <div className="flex items-center gap-1.5 ml-0 sm:ml-2">
+                <span className="text-[11px] text-muted-foreground">Per page:</span>
+                <Select
+                  value={String(pageSize)}
+                  onValueChange={(val) => {
+                    setPageSize(Number(val));
+                    setCurrentPage(1);
+                  }}
+                >
+                  <SelectTrigger className="h-7 w-[68px] text-xs bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 shadow-sm px-2">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="10">10</SelectItem>
+                    <SelectItem value="20">20</SelectItem>
+                    <SelectItem value="50">50</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {/* Right: Page Indicator and Buttons */}
+            <div className="flex items-center gap-1.5 w-full sm:w-auto justify-between sm:justify-end">
+              {/* Current page indicator pill */}
+              <span className="text-xs font-medium text-muted-foreground px-2.5 py-1 bg-muted/60 rounded-md border border-border/40 whitespace-nowrap">
+                Page <strong className="text-primary font-mono-data">{safeCurrentPage}</strong> of{" "}
+                <strong className="text-foreground font-mono-data">{totalPages}</strong>
+              </span>
+
+              {/* Navigation Buttons */}
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-7 w-7 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-800"
+                  disabled={safeCurrentPage === 1}
+                  onClick={() => setCurrentPage(1)}
+                  title="First Page"
+                >
+                  <ChevronsLeft className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-7 w-7 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-800"
+                  disabled={safeCurrentPage === 1}
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  title="Previous Page"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </Button>
+
+                {/* Numbered Page Buttons for Quick Access */}
+                <div className="hidden sm:flex items-center gap-1">
+                  {getPaginationNumbers(safeCurrentPage, totalPages).map((pNum, idx) => {
+                    if (pNum === "...") {
+                      return (
+                        <span key={`ellipsis-${idx}`} className="px-1 text-muted-foreground select-none">
+                          …
+                        </span>
+                      );
+                    }
+                    const isCurrent = pNum === safeCurrentPage;
+                    return (
+                      <Button
+                        key={`page-${pNum}`}
+                        variant={isCurrent ? "default" : "outline"}
+                        size="icon"
+                        className={cn(
+                          "h-7 w-7 text-xs font-mono-data font-semibold",
+                          isCurrent
+                            ? "bg-primary text-primary-foreground shadow-xs"
+                            : "border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                        )}
+                        onClick={() => setCurrentPage(Number(pNum))}
+                      >
+                        {pNum}
+                      </Button>
+                    );
+                  })}
+                </div>
+
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-7 w-7 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-800"
+                  disabled={safeCurrentPage === totalPages}
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  title="Next Page"
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-7 w-7 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-800"
+                  disabled={safeCurrentPage === totalPages}
+                  onClick={() => setCurrentPage(totalPages)}
+                  title="Last Page"
+                >
+                  <ChevronsRight className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </Card>
     </div>
   );

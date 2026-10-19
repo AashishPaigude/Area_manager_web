@@ -4,6 +4,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 import logging
 
+from app.models.employee import Employee
+
 logger = logging.getLogger(__name__)
 
 
@@ -11,12 +13,30 @@ class AnalyticsRepository:
     """Repository for querying raw inspection reports, site sessions, plans, and officer metrics."""
 
     @staticmethod
-    def get_field_officers(db: Session, user_branch_oid: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Retrieve all active field officers, optionally filtered by user_branch_oid."""
-        branch_clause = " AND e.BRANCH = :branch_oid" if user_branch_oid is not None else ""
-        params: Dict[str, Any] = {}
-        if user_branch_oid is not None:
-            params["branch_oid"] = user_branch_oid
+    def get_field_officers(
+        db: Session,
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        user_branch_oids: Optional[List[int]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve all active field officers, optionally filtered by area_manager_oid or user_branch_oid."""
+        if user_branch_oids:
+            b_list = ",".join(str(int(b)) for b in user_branch_oids)
+            if area_manager_oid is not None:
+                scope_clause = f" AND (e.BRANCH IN ({b_list}) AND (e.AREA_MANAGER_OID IS NULL OR e.AREA_MANAGER_OID = :area_manager_oid))"
+                params: Dict[str, Any] = {"area_manager_oid": area_manager_oid}
+            else:
+                scope_clause = f" AND e.BRANCH IN ({b_list})"
+                params = {}
+        elif area_manager_oid is not None:
+            scope_clause = " AND e.AREA_MANAGER_OID = :area_manager_oid"
+            params: Dict[str, Any] = {"area_manager_oid": area_manager_oid}
+        elif user_branch_oid is not None:
+            scope_clause = " AND e.BRANCH = :branch_oid"
+            params: Dict[str, Any] = {"branch_oid": user_branch_oid}
+        else:
+            scope_clause = ""
+            params: Dict[str, Any] = {}
 
         query = text(f"""
             SELECT 
@@ -25,22 +45,42 @@ class AnalyticsRepository:
                 e.emp_code,
                 e.BRANCH AS branch_oid,
                 b.name AS branch_name,
+                e.AREA_MANAGER_OID AS area_manager_oid,
                 e.active
             FROM EMPLOYEE e
             LEFT JOIN BRANCH b ON b.oid = e.BRANCH
-            WHERE e.active = 1 AND e.DESIGNATION = 19{branch_clause}
+            WHERE e.active = 1 AND e.DESIGNATION = 19{scope_clause}
             ORDER BY e.name ASC
         """)
         rows = db.execute(query, params).mappings().all()
         return [dict(r) for r in rows]
 
     @staticmethod
-    def get_officer_by_oid(db: Session, employee_oid: int, user_branch_oid: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    def get_officer_by_oid(
+        db: Session,
+        employee_oid: int,
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        user_branch_oids: Optional[List[int]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Retrieve single field officer details."""
-        branch_clause = " AND e.BRANCH = :branch_oid" if user_branch_oid is not None else ""
-        params: Dict[str, Any] = {"employee_oid": employee_oid}
-        if user_branch_oid is not None:
-            params["branch_oid"] = user_branch_oid
+        if user_branch_oids is not None:
+            b_list = ",".join(str(int(b)) for b in user_branch_oids)
+            if area_manager_oid is not None:
+                scope_clause = f" AND (e.BRANCH IN ({b_list}) AND (e.AREA_MANAGER_OID IS NULL OR e.AREA_MANAGER_OID = :area_manager_oid))"
+                params: Dict[str, Any] = {"employee_oid": employee_oid, "area_manager_oid": area_manager_oid}
+            else:
+                scope_clause = f" AND e.BRANCH IN ({b_list})"
+                params: Dict[str, Any] = {"employee_oid": employee_oid}
+        elif area_manager_oid is not None:
+            scope_clause = " AND e.AREA_MANAGER_OID = :area_manager_oid"
+            params: Dict[str, Any] = {"employee_oid": employee_oid, "area_manager_oid": area_manager_oid}
+        elif user_branch_oid is not None:
+            scope_clause = " AND e.BRANCH = :branch_oid"
+            params: Dict[str, Any] = {"employee_oid": employee_oid, "branch_oid": user_branch_oid}
+        else:
+            scope_clause = ""
+            params: Dict[str, Any] = {"employee_oid": employee_oid}
 
         query = text(f"""
             SELECT 
@@ -49,10 +89,11 @@ class AnalyticsRepository:
                 e.emp_code,
                 e.BRANCH AS branch_oid,
                 b.name AS branch_name,
+                e.AREA_MANAGER_OID AS area_manager_oid,
                 e.active
             FROM EMPLOYEE e
             LEFT JOIN BRANCH b ON b.oid = e.BRANCH
-            WHERE e.oid = :employee_oid{branch_clause}
+            WHERE e.oid = :employee_oid{scope_clause}
             LIMIT 1
         """)
         row = db.execute(query, params).mappings().first()

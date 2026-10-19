@@ -35,6 +35,8 @@ export interface DashboardSummary {
   completedVisitsWeekly?: number;
   plannedVisitsMonthly?: number;
   completedVisitsMonthly?: number;
+  sitesCoveredWeekly?: number;
+  sitesCoveredMonthly?: number;
 }
 
 export interface DashboardResponse {
@@ -50,7 +52,8 @@ export interface DashboardResponse {
 export const getDashboardData = async (
   targetDate?: string,
   forceRefresh?: boolean,
-  period?: "weekly" | "monthly"
+  period?: "weekly" | "monthly",
+  branchOid?: number | null
 ): Promise<DashboardResponse> => {
   try {
     const params: Record<string, any> = {};
@@ -62,6 +65,9 @@ export const getDashboardData = async (
     }
     if (period) {
       params.period = period;
+    }
+    if (branchOid !== undefined && branchOid !== null) {
+      params.branch_oid = branchOid;
     }
     const response = await api.get<DashboardResponse>('/api/v1/dashboard', { params });
     return response.data;

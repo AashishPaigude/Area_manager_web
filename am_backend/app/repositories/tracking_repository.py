@@ -43,10 +43,42 @@ class TrackingRepository:
     """Repository for querying Live Tracking, Track History, and Planned vs Actual visit metrics."""
 
     @staticmethod
-    def get_active_field_officers(db: Session, user_branch_oid: Optional[int] = None) -> List[Employee]:
-        """Retrieve active Field Officers (active = 1, DESIGNATION = 19), optionally scoped by user_branch_oid."""
+    def get_active_field_officers(
+        db: Session,
+        user_branch_oid: Optional[int] = None,
+        area_manager_oid: Optional[int] = None,
+        user_branch_oids: Optional[List[int]] = None,
+    ) -> List[Employee]:
+        """Retrieve active Field Officers (active = 1, DESIGNATION = 19), optionally scoped by area_manager_oid or user_branch_oid."""
         query = db.query(Employee).filter(Employee.active == 1, Employee.DESIGNATION == 19)
-        if user_branch_oid is not None:
+        if user_branch_oids:
+            if area_manager_oid is not None:
+                query = query.filter(
+                    Employee.BRANCH.in_(user_branch_oids),
+                    or_(
+                        Employee.AREA_MANAGER_OID.is_(None),
+                        Employee.AREA_MANAGER_OID == area_manager_oid,
+                    ),
+                )
+            else:
+                query = query.filter(Employee.BRANCH.in_(user_branch_oids))
+        elif area_manager_oid is not None:
+            if user_branch_oid is not None:
+                query = query.filter(
+                    Employee.BRANCH == user_branch_oid,
+                    or_(
+                        Employee.AREA_MANAGER_OID.is_(None),
+                        Employee.AREA_MANAGER_OID == area_manager_oid,
+                    ),
+                )
+            else:
+                query = query.filter(
+                    or_(
+                        Employee.AREA_MANAGER_OID.is_(None),
+                        Employee.AREA_MANAGER_OID == area_manager_oid,
+                    )
+                )
+        elif user_branch_oid is not None:
             query = query.filter(Employee.BRANCH == user_branch_oid)
         return query.order_by(Employee.name.asc()).all()
 

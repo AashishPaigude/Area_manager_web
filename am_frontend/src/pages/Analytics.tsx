@@ -71,6 +71,7 @@ import {
   AnalyticsSummaryResponse,
   OfficerAnalyticsDropdownItem,
 } from '@/services/analyticsService';
+import { getBranches, Branch } from '@/services/visitService';
 
 const REPORT_COLORS = {
   day: '#10b981',      // Emerald
@@ -204,23 +205,33 @@ export default function Analytics() {
 
   // Fleet / Global Data State
   const [officersList, setOfficersList] = useState<OfficerAnalyticsDropdownItem[]>([]);
+  const [branchesList, setBranchesList] = useState<Branch[]>([]);
+  const [selectedBranch, setSelectedBranch] = useState<string>("ALL");
   const [analyticsData, setAnalyticsData] = useState<AnalyticsSummaryResponse | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
 
-  // Load Officers List for Dropdown
+  // Load Branches on mount
+  useEffect(() => {
+    getBranches()
+      .then((bList) => setBranchesList(bList || []))
+      .catch((err) => console.error("Failed to load branches for analytics:", err));
+  }, []);
+
+  // Load Officers List for Dropdown filtered by branch if selected
   useEffect(() => {
     const fetchOfficers = async () => {
       try {
-        const list = await analyticsService.getOfficers();
+        const bOid = selectedBranch !== "ALL" ? parseInt(selectedBranch, 10) : undefined;
+        const list = await analyticsService.getOfficers(bOid);
         setOfficersList(list);
       } catch (err) {
         console.error('Failed to load officers for analytics:', err);
       }
     };
     fetchOfficers();
-  }, []);
+  }, [selectedBranch]);
 
   // Compute from_date and to_date based on dateMode
   const dateParams = useMemo(() => {
@@ -258,10 +269,12 @@ export default function Analytics() {
     else setIsLoading(true);
 
     try {
+      const bOid = selectedBranch !== "ALL" ? parseInt(selectedBranch, 10) : undefined;
       const data = await analyticsService.getSummary({
         from_date: dateParams.from_date,
         to_date: dateParams.to_date,
         period: dateParams.period,
+        branch_oid: bOid,
       });
       setAnalyticsData(data);
       setLastUpdated(new Date());
@@ -275,7 +288,7 @@ export default function Analytics() {
 
   useEffect(() => {
     loadAnalytics();
-  }, [dateParams]);
+  }, [dateParams, selectedBranch]);
 
   // Fetch Officer Specific Details when Drawer Opens
   const fetchDrawerData = async (officerOid: number, allTime = false) => {
@@ -435,8 +448,35 @@ export default function Analytics() {
 
         {/* Clean, Inline Filter Toolbar */}
         <div className="pt-3 border-t border-border/50 grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-center">
-          {/* Officer Selector (4 cols) */}
-          <div className="sm:col-span-4">
+          {/* Branch Selector (Only shown when user/manager handles multiple branches) */}
+          {branchesList.length > 1 && (
+            <div className="sm:col-span-3">
+              <Select
+                value={selectedBranch}
+                onValueChange={(val) => {
+                  setSelectedBranch(val);
+                  setDrawerOfficerOid(null);
+                }}
+              >
+                <SelectTrigger className="h-9 text-xs font-medium bg-background border-border shadow-xs">
+                  <SelectValue placeholder="All Branches" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL" className="font-semibold text-xs">
+                    All Branches
+                  </SelectItem>
+                  {branchesList.map((b) => (
+                    <SelectItem key={b.oid} value={String(b.oid)} className="text-xs">
+                      {b.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {/* Officer Selector */}
+          <div className={branchesList.length > 1 ? "sm:col-span-3" : "sm:col-span-4"}>
             <Select
               value={drawerOfficerOid ? String(drawerOfficerOid) : 'all'}
               onValueChange={(val) => {
@@ -480,8 +520,8 @@ export default function Analytics() {
             </Select>
           </div>
 
-          {/* Time Scope Mode (3 cols) */}
-          <div className="sm:col-span-3">
+          {/* Time Scope Mode */}
+          <div className={branchesList.length > 1 ? "sm:col-span-2" : "sm:col-span-3"}>
             <Select
               value={dateMode}
               onValueChange={(val: 'single_day' | 'month' | 'custom' | 'all_time') => setDateMode(val)}
@@ -498,8 +538,8 @@ export default function Analytics() {
             </Select>
           </div>
 
-          {/* Date Picker & Controls (5 cols) */}
-          <div className="sm:col-span-5">
+          {/* Date Picker & Controls */}
+          <div className={branchesList.length > 1 ? "sm:col-span-4" : "sm:col-span-5"}>
             {dateMode === 'single_day' && (
               <div className="flex items-center gap-1.5">
                 <Button

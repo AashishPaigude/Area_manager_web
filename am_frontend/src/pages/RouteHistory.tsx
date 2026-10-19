@@ -16,7 +16,7 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline, Circle, Tooltip, useM
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { trackingService, TrackHistoryResponse, WaypointItem, SiteVisitItem } from "@/services/trackingService";
-import { getFieldOfficers, FieldOfficer } from "@/services/visitService";
+import { getFieldOfficers, FieldOfficer, getBranches, Branch } from "@/services/visitService";
 
 const STOP_COLORS = [
   "#8b5cf6", // purple
@@ -734,6 +734,8 @@ function MapController({
 
 export default function RouteHistory() {
   const [officers, setOfficers] = useState<FieldOfficer[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selectedBranch, setSelectedBranch] = useState<string>("ALL");
   const [selectedOfficerOid, setSelectedOfficerOid] = useState<number | null>(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -774,19 +776,29 @@ export default function RouteHistory() {
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
 
-  // Initial load: Fetch active field officers list
+  // Initial load: Fetch active field officers and branches list
   useEffect(() => {
-    async function loadOfficers() {
+    async function loadMasterData() {
       try {
-        const data = await getFieldOfficers();
-        setOfficers(data);
-        // Do not auto-select any officer by default; wait for user selection
+        const [officersData, branchesData] = await Promise.all([
+          getFieldOfficers(),
+          getBranches().catch(() => [] as Branch[]),
+        ]);
+        setOfficers(officersData);
+        setBranches(branchesData);
       } catch (err: any) {
-        console.error("Failed to load field officers:", err);
+        console.error("Failed to load field officers and branches:", err);
       }
     }
-    loadOfficers();
+    loadMasterData();
   }, []);
+
+  // Filter officers by selected branch if multiple branches exist
+  const filteredOfficers = useMemo(() => {
+    if (selectedBranch === "ALL") return officers;
+    const bOid = Number(selectedBranch);
+    return officers.filter(o => o.branch_oid === bOid);
+  }, [officers, selectedBranch]);
 
   // Reset selected trip when officer or date changes
   useEffect(() => {
@@ -1371,6 +1383,29 @@ export default function RouteHistory() {
       <div className="flex flex-wrap gap-3 items-center">
         <Filter className="h-4 w-4 text-muted-foreground" />
         
+        {/* Branch Selection (Only shown when user/manager handles multiple branches) */}
+        {branches.length > 1 && (
+          <Select
+            value={selectedBranch}
+            onValueChange={v => {
+              setSelectedBranch(v);
+              setSelectedOfficerOid(null);
+            }}
+          >
+            <SelectTrigger className="h-8 w-44 text-xs border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+              <SelectValue placeholder="All Branches" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All Branches</SelectItem>
+              {branches.map(b => (
+                <SelectItem key={b.oid} value={String(b.oid)}>
+                  {b.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+
         {/* Officer Selection */}
         <Select
           value={selectedOfficerOid ? String(selectedOfficerOid) : ""}
@@ -1380,7 +1415,7 @@ export default function RouteHistory() {
             <SelectValue placeholder="Select Field Officer" />
           </SelectTrigger>
           <SelectContent>
-            {officers.map(o => (
+            {filteredOfficers.map(o => (
               <SelectItem key={o.oid} value={String(o.oid)}>
                 {o.name} ({o.emp_code || `EMP${o.oid}`})
               </SelectItem>
